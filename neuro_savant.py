@@ -93,7 +93,7 @@ except ImportError:
 @dataclass
 class Config:
     db_path: str = "./neuro_savant_memory"
-    model_name: str = "llama3.2"  # Default LLM model
+    model_name: str = "deepseek-r1:1.5b"  # Default LLM model
     embed_model: str = "nomic-embed-text"  # Embedding model
     use_agentic: bool = True           # Enable agentic function calling (LLM controls search)
     similarity_threshold: float = 0.4  # Threshold to join a group (cosine distance)
@@ -965,8 +965,8 @@ def parse_args():
     parser.add_argument(
         "--model", "-m",
         type=str,
-        default="llama3.2",
-        help="Ollama LLM model (default: llama3.2)"
+        default="deepseek-r1:1.5b",
+        help="Ollama LLM model (default: deepseek-r1:1.5b)"
     )
     parser.add_argument(
         "--embed", "-e",

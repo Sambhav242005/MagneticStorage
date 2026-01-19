@@ -1,4 +1,5 @@
 chromadb
 numpy
+ollama
+requests
 sentence-transformers
-
