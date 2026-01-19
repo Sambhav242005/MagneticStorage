@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv/
+
+# ChromaDB / Vector Stores
+neuro_savant_memory/
+neuro_savant_v2_db/
+benchmark_baseline_db/
+benchmark_graph_db/
+*_db/
+*_memory/
+
+# Data
+data/
+outputs/
+reports/
+logs/
+*.log
+dream_log.jsonl
+
+# IDEs
+.idea/
+.vscode/
+
+# Config
+.neuro_savant_config

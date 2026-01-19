@@ -1,0 +1,98 @@
+[
+  {
+    "id": "exact_0",
+    "question": "What is the Omega Protocol password?",
+    "answer": "Azure-99-Gamma",
+    "context": "\n[CLASSIFIED LOG 26408]: CLASSIFIED: The Omega Protocol password is 'Azure-99-Gamma'. Do not share.\n",
+    "depth_percent": 10.0,
+    "needle_type": "exact",
+    "requires": []
+  },
+  {
+    "id": "exact_1",
+    "question": "What is the frequency of the Ghost Signal?",
+    "answer": "442.8 MHz",
+    "context": "\n[CLASSIFIED LOG 82467]: Signal Analysis: The Ghost Signal broadcasts on exactly 442.8 MHz.\n",
+    "depth_percent": 30.000000000000004,
+    "needle_type": "exact",
+    "requires": []
+  },
+  {
+    "id": "exact_2",
+    "question": "Who is the traitor in Section 9?",
+    "answer": "Commander Reyes",
+    "context": "\n[CLASSIFIED LOG 56009]: INTEL REPORT: Commander Reyes has been confirmed as the traitor in Section 9.\n",
+    "depth_percent": 50.0,
+    "needle_type": "exact",
+    "requires": []
+  },
+  {
+    "id": "exact_3",
+    "question": "What is the launch code for Project Titan?",
+    "answer": "7749-WHISKEY-TANGO",
+    "context": "\n[CLASSIFIED LOG 31099]: EYES ONLY: Project Titan launch code is 7749-WHISKEY-TANGO.\n",
+    "depth_percent": 70.0,
+    "needle_type": "exact",
+    "requires": []
+  },
+  {
+    "id": "exact_4",
+    "question": "Where is the hidden rebel base located?",
+    "answer": "Moon of Endor",
+    "context": "\n[CLASSIFIED LOG 43452]: Reconnaissance confirms the hidden rebel base is on the Moon of Endor.\n",
+    "depth_percent": 90.0,
+    "needle_type": "exact",
+    "requires": []
+  },
+  {
+    "id": "multihop_5",
+    "question": "What did Commander Reyes steal from Project Titan?",
+    "answer": "launch codes",
+    "context": "\n[MULTI-HOP INTEL 69126]: After Commander Reyes' betrayal was discovered, investigators found he had accessed the Project Titan vault and copied the launch codes.\n",
+    "depth_percent": 43.248484799241496,
+    "needle_type": "multi_hop",
+    "requires": [
+      "traitor",
+      "titan"
+    ]
+  },
+  {
+    "id": "multihop_6",
+    "question": "How did the Ghost Signal reach the Moon of Endor?",
+    "answer": "relay satellite",
+    "context": "\n[MULTI-HOP INTEL 13034]: The Ghost Signal's 442.8 MHz transmission was bounced off a hidden relay satellite positioned directly above the Moon of Endor.\n",
+    "depth_percent": 41.119283132383416,
+    "needle_type": "multi_hop",
+    "requires": [
+      "ghost_signal",
+      "rebel_base"
+    ]
+  },
+  {
+    "id": "drift_7",
+    "question": "What is it?",
+    "answer": "quantum stabilizer",
+    "context": "\n[CONTEXT 77744]: Dr. Chen examined the quantum stabilizer carefully. 'This is our best chance,' she said.\n",
+    "depth_percent": 27.05569519891578,
+    "needle_type": "semantic_drift",
+    "requires": []
+  },
+  {
+    "id": "drift_8",
+    "question": "Where did they put that?",
+    "answer": "vault B7",
+    "context": "\n[CONTEXT 91626]: The artifact was secured in vault B7 after the incident.\n",
+    "depth_percent": 30.392093645231604,
+    "needle_type": "semantic_drift",
+    "requires": []
+  },
+  {
+    "id": "coherence_9",
+    "question": "How did the protagonist's motivation change throughout the story?",
+    "answer": "revenge to redemption",
+    "context": "Chapter 1: Marcus swore revenge against those who destroyed his village. | Chapter 3: Meeting the orphaned children made Marcus question his path. | Chapter 5: Marcus chose to protect the innocent rather than seek vengeance. | Conclusion: Marcus found redemption through sacrifice, saving the very people he once blamed.",
+    "depth_percent": 50.0,
+    "needle_type": "coherence",
+    "requires": []
+  }
+]
