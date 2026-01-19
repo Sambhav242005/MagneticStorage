@@ -11,6 +11,7 @@
 ### `/core/`
 Core modules and utilities
 - `performance_tracker.py` - Performance metrics and visualization
+- `chat_agentic.py` - Agentic chat logic and tool orchestration
 
 ### `/tools/`
 Agentic tools for NeuroSavant
@@ -19,19 +20,25 @@ Agentic tools for NeuroSavant
 - `infinite.py` - Continuous generation
 - `github_ingest.py` - Repository ingestion
 - `storyline_agent.py` - Story generation
+- `story_registry.py` - Story consistency tracking
 - `__init__.py` - Tool loading framework
 
 ### `/benchmarks/`
 Benchmark scripts and comparisons
 - `baseline_rag.py` - Standard RAG baseline
-- `benchmark_*.py` - Various benchmark scripts
+- `benchmark_1m_rag.py` - 1M scale RAG benchmark
+- `benchmark_data_gen.py` - Data generation for benchmarks
+- `benchmark_full.py` - comprehensive system benchmark
+- `benchmark_recall.py` - Recall accuracy benchmark
+- `benchmark_standalone.py` - Standalone benchmark runner
 
 ### `/scripts/`
 Utility and test scripts
 - `debug_v2.py` - Debugging utilities
 - `mock_setup.py` - Mock testing setup
 - `query_1m_cellular.py` - Large-scale query testing
-- `verify_*.py` - Verification scripts
+- `verify_1m_cellular.py` - Cellular memory verification
+- `verify_sleep_mode.py` - Sleep mode verification
 
 ### `/data/`
 Data files and logs
@@ -43,7 +50,6 @@ Data files and logs
 Unit and integration tests
 - `stress_test.py`
 - `story_consistency_test.py`
-- etc.
 
 ### `/reports/`
 Benchmark and analysis reports

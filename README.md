@@ -4,36 +4,16 @@
 
 ## Project Structure
 
-```
-MagneticStorage/
-├── neuro_savant.py          # Main application (NeuroSavant agent + memory grid)
-├── mock_setup.py            # Mock utilities for testing
-│
-├── tools/                   # Modular tool extensions
-│   ├── __init__.py          # Tool framework (BaseTool, auto-discovery)
-│   ├── agent_behavior.py    # Persona/style modifier (/behavior)
-│   ├── example.py           # Template loader (/example)
-│   ├── github_ingest.py     # GitHub repo ingestion (/ingest)
-│   ├── infinite.py          # Infinite generation mode (/infinite)
-│   ├── story_registry.py    # Story consistency tracking (regex-based)
-│   └── storyline_agent.py   # Agentic story generator (/story)
-│
-├── tests/                   # Test suite
-│   ├── __init__.py
-│   ├── story_consistency_test.py  # Story consistency stress tests
-│   ├── stress_test.py       # Full workflow stress test
-│   ├── test_adaptive.py     # Adaptive memory tests
-│   └── test_clustering.py   # Clustering tests
-│
-├── reports/                 # Documentation & analysis
-│   ├── architecture_comparison.md
-│   ├── benchmark_debugging_journey.md
-│   └── project_critique.md
-│
-├── baseline_rag.py          # Baseline RAG comparison
-├── benchmark_data_gen.py    # Benchmark data generator
-└── benchmark_recall.py      # Recall benchmark
-```
+For a detailed breakdown of the project structure, see [STRUCTURE.md](./STRUCTURE.md).
+
+## Tools & Behaviors
+NeuroSavant features a modular tool system. The following tools are currently available:
+
+- **AgentBehavior** (`/behavior`): sophisticated persona and style management for the agent.
+- **StorylineAgent** (`/story`): Interactive story generation with consistency tracking.
+- **InfiniteLoop** (`/infinite`): Continuous, autonomous content generation mode.
+- **GitHubIngest** (`/ingest`): Ingests and indexes entire GitHub repositories.
+- **Example** (`/example`): Loads template conversations or data.
 
 ## Quick Start
 
@@ -58,6 +38,7 @@ python neuro_savant.py --model qwen2.5:3b
 | `/infinite on` | Enable infinite generation mode |
 | `/behavior set <persona>` | Set agent persona |
 | `/ingest <github-url>` | Ingest a GitHub repo |
+| `/example list/load` | Manage templates |
 | `/clean` | Wipe memory |
 | `/quit` | Exit |
 
