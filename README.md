@@ -69,8 +69,8 @@ NeuroSavant features a modular tool system. The following tools are currently av
 
 ### 2. Installation
 ```bash
-# 1. Clone (if not already done)
-git clone <repo-url>
+# 1. Clone the repository
+git clone https://github.com/Sambhav242005/MagneticStorage.git
 cd MagneticStorage
 
 # 2. Create a virtual environment
