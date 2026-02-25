@@ -1,6 +1,7 @@
 import json
 import time
-import ollama
+import re
+import requests
 from typing import List, Dict, Optional, Tuple
 
 # Import story consistency tracking
@@ -18,7 +19,7 @@ class StorylineAgent:
     
     def __init__(self, neuro_savant_instance):
         self.brain = neuro_savant_instance
-        self.model = self.brain.model_name
+        self.model = self.brain.config.model_name
         self.system_prompt = "You are the 'Genesis Core'. Your job is to procedurally generate a consistent 3D world."
         
         # Initialize story consistency tracker
@@ -27,6 +28,24 @@ class StorylineAgent:
             print("  ✓ Story Consistency Tracker enabled")
         else:
             self.consistency_tracker = None
+
+    def _call_ollama(self, messages: List[Dict]) -> str:
+        try:
+            response = requests.post(
+                "http://localhost:11434/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "stream": False
+                }
+            )
+            if response.status_code == 200:
+                return response.json().get('message', {}).get('content', '')
+            print(f"Ollama API Error: {response.status_code} - {response.text}")
+            return ""
+        except Exception as e:
+            print(f"Ollama API Connect Error: {e}")
+            return ""
 
         
     def execute_workflow(self, topic: str):
@@ -44,15 +63,15 @@ class StorylineAgent:
         # Flatten the keys to generate content for each major aspect
         sections = ["The Magic System", "Biomes & Hazards", "Civilization & Defense"]
         
-        for section in sections:
+        for section_idx, section in enumerate(sections):
             print(f"\n   ✍️  Phase 2: Generating Assets for '{section}'...", end="", flush=True)
             # We pass the World Config as the 'Plan' to guide the writer
-            content_full, chunks = self._generate_section(section, context_summary)
+            content_full, chunks, extracted_facts = self._generate_section(section, context_summary)
             print(" Done!")
             
             # 3. VERIFIER
             print(f"   🛡️  Phase 3: Verifying Physics...", end="", flush=True)
-            if self._verify_consistency(content_full, context_summary):
+            if self._verify_consistency(content_full, context_summary, extracted_facts, section_idx):
                 print(" ✅ Passed")
                 
                 
@@ -63,26 +82,15 @@ class StorylineAgent:
                 summary = self._summarize_content(content_full)
                 
                 # B. Save Master Node (The Section Summary)
-                master_id = self.brain.memory._generate_id_from_content(section)
-                self.brain.memory.update_state_immediate(
-                    master_id, 
-                    ["Layer1", "WorldBible"], 
-                    "", 
-                    f"# {section} (Summary)\n{summary}\n\n[Full Content Linked in Children]"
-                )
+                # B. Save Master Node (The Section Summary)
+                self.brain.ingest(f"# {section} (Summary)\n{summary}\n\n[Full Content Linked in Children]")
                 
                 # C. Save Individual Chunks (for granular retrieval)
                 for i, chunk in enumerate(chunks):
-                    chunk_id = self.brain.memory._generate_id_from_content(chunk)
                     # We preface chunk with section name so Re-ranker knows the topic
                     chunk_text = f"## {section} (Part {i+1})\n{chunk}"
                     
-                    self.brain.memory.update_state_immediate(
-                        chunk_id,
-                        ["Layer1", "WorldBible"],
-                        "", # Facts
-                        chunk_text
-                    )
+                    self.brain.ingest(chunk_text)
                 
                 print(" Saved")
                 context_summary += f"\n\n[Finished {section}]: {summary}..."
@@ -101,11 +109,11 @@ class StorylineAgent:
     def _summarize_content(self, text: str) -> str:
         """Compress large content into a retrievable summary"""
         if len(text) < 500: return text
-        response = ollama.chat(model=self.model, messages=[
+        response_content = self._call_ollama([
             {"role": "system", "content": "Summarize this text in 3-4 dense paragraphs. Capture key entities and rules."},
             {"role": "user", "content": text[:4000]} # Limit input to avoid context overflow
         ])
-        return response['message']['content']
+        return response_content
 
     def _create_world_config(self, topic: str) -> Dict:
         prompt = f"""
@@ -117,49 +125,87 @@ Generate a JSON object containing:
 2. "biomes": [ {{ "name": "...", "visual_prompt": "...", "hazard_level": 1-10 }} ] (List of 3)
 3. "civilization": {{ "settlement_style": "...", "defense_strategy": "..." }}
 """
-        response = ollama.chat(model=self.model, messages=[
+        response_content = self._call_ollama([
             {"role": "system", "content": "You are a JSON generator. Output ONLY valid JSON."},
             {"role": "user", "content": prompt}
         ])
         try:
-            rv =  response['message']['content']
+            rv = re.sub(r'<think>.*?</think>', '', response_content, flags=re.DOTALL).strip()
             if "```" in rv:
                  rv = rv.split("```")[1].replace("json", "").strip()
             return json.loads(rv)
         except:
-             return {"error": "Failed to generate JSON", "raw": response['message']['content']}
+             return {"error": "Failed to generate JSON", "raw": response_content}
 
-    def _generate_section(self, section: str, context: str) -> Tuple[str, List[str]]:
+    def _generate_section(self, section: str, context: str) -> Tuple[str, List[str], Optional[Dict]]:
         # Get Personas and Templates
         system_prompt = self.system_prompt
-        if hasattr(self.brain, 'behavior_tool') and self.brain.behavior_tool:
-            system_prompt = self.brain.behavior_tool.get_system_prompt()
+        if 'behavior' in self.brain.tools:
+            system_prompt = self.brain.tools['behavior'].get_system_prompt()
             
         template_context = ""
-        if hasattr(self.brain, 'example_tool') and self.brain.example_tool:
-            template_context = self.brain.example_tool.get_context()
+        if 'example' in self.brain.tools:
+            template_context = self.brain.tools['example'].get_context()
             
         prompt = f"Write the section '{section}'.\n\nCONTEXT:\n{context}\n{template_context}"
         
+        json_prompt = prompt + """
+        
+IMPORTANT: Output ONLY a valid JSON object with this exact structure:
+{
+  "prose_text": "The actual narrative content you wrote for this section. Must be detailed and immersive.",
+  "facts_extracted": {
+    "characters": [{"name": "...", "physical": {"eyes": "...", "hair": "..."}, "traits": ["..."]}],
+    "world_rules": {"rule_name_rule": "rule description"},
+    "events": [{"id": "...", "outcome": "..."}],
+    "locations": {"name": {"description": ""}}
+  }
+}
+"""
+        
         # Use Infinite Generator if available
-        if hasattr(self.brain, 'infinite_tool') and self.brain.infinite_tool:
-            return self.brain.infinite_tool.generate_sequence(
+        if 'infinite' in self.brain.tools:
+            content, chunks = self.brain.tools['infinite'].generate_sequence(
                 self.model, system_prompt, prompt,
                 consistency_tracker=self.consistency_tracker
             )
+            # We don't have facts in infinite loop directly without extra logic
+            # but we can return {} so it doesn't default to regex extraction incorrectly
+            return content, chunks, {}
             
         # Fallback to standard generation
-        response = ollama.chat(model=self.model, messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
+        content_json = self._call_ollama([
+            {"role": "system", "content": system_prompt + " You must output ONLY valid JSON."},
+            {"role": "user", "content": json_prompt}
         ])
-        content = response['message']['content']
-        return content, [content]
 
-    def _verify_consistency(self, content: str, context: str) -> bool:
-        # Simple self-consistency check using Re-ranker
-        # If the content contradicts the context, score should be low?
-        # Actually, for now, we just check if it's not empty/nonsense.
-        # A Real implementation would extract facts and check graph.
+        prose_text = content_json
+        extracted_facts = {}
+        try:
+            rv = re.sub(r'<think>.*?</think>', '', content_json, flags=re.DOTALL).strip()
+            
+            # Find JSON boundaries
+            start_idx = rv.find('{')
+            end_idx = rv.rfind('}')
+            
+            if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+                json_str = rv[start_idx:end_idx+1]
+                data = json.loads(json_str, strict=False)
+                prose_text = data.get("prose_text", prose_text)
+                extracted_facts = data.get("facts_extracted", {})
+        except Exception as e:
+            print(f"JSON Parse Error: {e}")
+            pass
+
+        return prose_text, [prose_text], extracted_facts
+
+    def _verify_consistency(self, content: str, context: str, facts: Optional[Dict] = None, chunk_id: int = 0) -> bool:
         if len(content) < 50: return False
+        
+        if self.consistency_tracker:
+            conflicts = self.consistency_tracker.process_chunk(chunk_id, content, self.model, pre_extracted_facts=facts)
+            critical = [c for c in conflicts if c.severity == 'critical']
+            if critical:
+                return False
+                
         return True

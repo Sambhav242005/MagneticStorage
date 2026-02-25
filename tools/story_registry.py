@@ -270,7 +270,7 @@ class StoryConsistencyRegistry:
                     
         return conflicts
     
-    def process_chunk(self, chunk_id: int, text: str, model: str) -> List[Conflict]:
+    def process_chunk(self, chunk_id: int, text: str, model: str, pre_extracted_facts: Optional[Dict] = None) -> List[Conflict]:
         """
         Main entry point: extract facts from chunk and validate consistency.
         Returns list of detected conflicts.
@@ -278,8 +278,12 @@ class StoryConsistencyRegistry:
         print(f"   📖 Analyzing chunk {chunk_id} for consistency...", end="", flush=True)
         
         # 1. Extract facts
-        extracted = self.extract_facts(text, model)
-        if not extracted:
+        if pre_extracted_facts is not None:
+            extracted = pre_extracted_facts
+        else:
+            extracted = self.extract_facts(text, model)
+            
+        if extracted is None:
             print(" (extraction failed)")
             self.history.append({
                 "chunk_id": chunk_id,

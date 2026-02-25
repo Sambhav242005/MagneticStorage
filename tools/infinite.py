@@ -1,16 +1,43 @@
-import ollama
-from typing import Tuple, List
+
+
+import json
+import re
+import requests
+from typing import Tuple, List, Optional, Any
 
 class InfiniteLoopTool:
     """
-    Enables 'Infinite' generation mode (Rolling Context Loop).
-    Allows tools to generate content exceeding standard window limits.
+    Enables 'Infinite' generation mode (Rolling Context Loop) with:
+    1. Planning Phase (Task breakdown)
+    2. Dynamic Memory Access (Querying NeuroSavant)
+    3. Auto-Save (Ingesting chunks)
+    
     Usage: /infinite on | off
     """
-    def __init__(self):
+    def __init__(self, memory_client: Any = None):
         self.active = False
-        self.chunk_limit = 5  # Generates up to 5 chunks by default
+        self.chunk_limit = 10 
+        self.memory_client = memory_client # Reference to NeuroSavant instance
+        self.api_url = "http://localhost:11434/api/chat"
         
+    def _chat(self, model: str, messages: List[dict]) -> str:
+        """Helper to call Ollama API directly via requests"""
+        try:
+            response = requests.post(
+                self.api_url,
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": False
+                },
+                timeout=300
+            )
+            response.raise_for_status()
+            return response.json().get('message', {}).get('content', '')
+        except Exception as e:
+            print(f"   ⚠️  Ollama API error: {e}")
+            return ""
+
     def execute(self, command: str) -> str:
         parts = command.split()
         if not parts:
@@ -19,7 +46,7 @@ class InfiniteLoopTool:
         action = parts[0].lower()
         if action == "on":
             self.active = True
-            return "♾️  Infinite Generation: ENABLED (Will chain outputs)"
+            return "♾️  Infinite Generation: ENABLED (Planning + Memory Access)"
         elif action == "off":
             self.active = False
             return "Generations restricted to single-shot."
@@ -28,147 +55,165 @@ class InfiniteLoopTool:
                 self.chunk_limit = int(parts[1])
                 return f"Chunk limit set to {self.chunk_limit}"
                 
-        return "Usage: /infinite on | off"
+        return "Usage: /infinite on | off | set_chunks <N>"
+
+    def generate_plan(self, model_name: str, user_prompt: str) -> List[dict]:
+        """
+        Generates a structured plan/todo list for the content.
+        """
+        print("\n📝 Generating Plan...")
+        
+        system_prompt = """
+        You are an expert story architect and planner. 
+        Your goal is to break down the user's request into a series of logical, detailed chunks (steps).
+        
+        Adapt the granularity and estimated length (e.g. "Chapter 1", "800 words") solely based on the user's request.
+        
+        Return a JSON array of objects, where each object has:
+        - "step_id": integer
+        - "title": string (short title)
+        - "description": string (detailed instructions on what to write in this chunk)
+        - "estimated_length": string (e.g. "800 words", "detailed scene")
+        - "search_query": string (a search query to find relevant info in memory database. Empty if none needed.)
+        
+        Example:
+        [
+            {"step_id": 1, "title": "Chapter 1: The Call", "description": "Introduce the protagonist in their normal life, then disrupt it.", "estimated_length": "800 words", "search_query": "Protagonist backstory"},
+            {"step_id": 2, "title": "Chapter 1: The Departure", "description": "The protagonist leaves home. Describe the environment in detail.", "estimated_length": "1000 words", "search_query": "Setting details"}
+        ]
+        """
+        
+        content = self._chat(model_name, [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Create a detailed plan for: {user_prompt}"}
+        ])
+        
+        if not content:
+             print("   ⚠️  Planning failed: No response.")
+             return []
+
+        # extract json
+        try:
+            json_match = re.search(r'\[.*\]', content, re.DOTALL)
+            if json_match:
+                plan = json.loads(json_match.group(0))
+                print(f"   ✅ Plan created with {len(plan)} steps.")
+                for step in plan:
+                    print(f"      - {step.get('step_id')}. {step.get('title')} (Query: {step.get('search_query', 'None')})")
+                return plan
+            else:
+                print("   ⚠️  Failed to parse plan as JSON. Falling back to linear generation.")
+                return []
+        except Exception as e:
+            print(f"   ⚠️  Planning parsing failed: {e}")
+            return []
 
     def generate_sequence(self, model_name: str, system_prompt: str, user_prompt: str, 
                           memory_check_fn=None, consistency_tracker=None) -> Tuple[str, List[str]]:
         """
-        Generates -> (full_text, list_of_chunks)
-        param memory_check_fn: Callable(topic) -> bool. Returns True if topic exists in DB.
-        param consistency_tracker: Optional StoryConsistencyRegistry instance for tracking story consistency.
+        Executes the Infinite Loop generation.
         """
         if not self.active:
-            # Standard single shot
-            response = ollama.chat(model=model_name, messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ])
-            content = response['message']['content']
-            
-            # Track consistency even for single-shot
-            if consistency_tracker:
-                consistency_tracker.process_chunk(0, content, model_name)
-                
-            return content, [content]
+            # Fallback to single shot if somehow called while inactive
+            return "Infinite mode is OFF.", []
+
+        # 1. Generate Plan
+        plan = self.generate_plan(model_name, user_prompt)
         
-        # Infinite Loop Mode
+        # If plan failed or empty, fallback to simple chunks
+        if not plan:
+            # Create a dummy plan
+            plan = [
+                {"step_id": 1, "title": "Content", "description": "Write the response.", "estimated_length": "full", "search_query": user_prompt}
+            ]
+
         chunks = []
-        # Initial context
-        current_context = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+        full_text_buffer = ""
+        
+        # Initial Context
+        messages = [
+            {"role": "system", "content": system_prompt}
         ]
         
-        full_text_buffer = ""
-        safety_limit = 20 # Increased safety limit
+        print("\n🚀 Starting Infinite Generation Sequence...")
         
-        print(f"   ♾️  Looping generation (Goal-Directed, Max {safety_limit} chunks)...")
-        
-        for i in range(safety_limit):
-            # 1. Generate Content
-            response = ollama.chat(model=model_name, messages=current_context)
-            chunk = response['message']['content']
-            chunks.append(chunk)
-            full_text_buffer += "\n" + chunk
+        for step in plan:
+            step_id = step.get('step_id')
+            title = step.get('title')
+            desc = step.get('description')
+            query = step.get('search_query')
             
-            # Show full chunk content
-            print(f"\n\n{'='*60}")
-            print(f"📜 CHUNK {i+1}")
-            print('='*60)
-            print(chunk)
-            print('='*60)
+            print(f"\n   👉 Step {step_id}: {title}")
             
-            # 1.5. Story Consistency Check
-            if consistency_tracker:
-                conflicts = consistency_tracker.process_chunk(i + 1, chunk, model_name)
-                if conflicts:
-                    critical_conflicts = [c for c in conflicts if c.severity == "critical"]
-                    if critical_conflicts:
-                        print(f"\n   ⚠️  CONSISTENCY WARNING: {len(critical_conflicts)} critical conflicts detected")
-                        for c in critical_conflicts[:3]:  # Show first 3
-                            print(f"      - {c}")
+            # 2. Retrieve Context (if configured)
+            memory_context = ""
+            if query and self.memory_client:
+                # Handle if planner returns a list of queries
+                if isinstance(query, list):
+                    query = " ".join(query)
+                    
+                print(f"   🔍 Querying Memory: '{query}'...", end="", flush=True)
+                try:
+                    # We access the memory_client's query method
+                    memory_context = self.memory_client.query(query)
+                    if not memory_context or "No memory found" in memory_context:
+                         print(" No results.")
+                         memory_context = ""
+                    else:
+                         print(" Found context.")
+                except Exception as e:
+                    print(f" Error: {e}")
+
+            # 3. Construct Prompt for this Chunk
+            step_prompt = f"""
+            CURRENT OBJECTIVE: Step {step_id} - {title}
+            TARGET LENGTH: {step.get('estimated_length', 'Detailed')}
+            INSTRUCTIONS: {desc}
             
-            # 2. Supervisor Check (Self-Reflection) using a separate context
-            if i > 0: # Check after first chunk
-                missing = self._detect_missing_elements(model_name, full_text_buffer, memory_check_fn)
-                if not missing:
-                    print("\n   ✅ Supervisor: World appears complete and detailed.")
-                    break
+            CONTEXT FROM MEMORY (GROUND TRUTH):
+            {memory_context[:2000] if memory_context else "No external context."}
+            
+            PREVIOUS CONTENT SUMMARY:
+            {full_text_buffer[-500:] if full_text_buffer else "Start of content."}
+            
+            Write this section now. 
+            CRITICAL: 
+            1. Write fully developed content. Do not summarize. Use dialogue, sensory details, and deep description.
+            2. The CONTEXT FROM MEMORY is the absolute truth. Do not contradict it. Use it to ground your writing.
+            
+            Focus ONLY on this step, but ensure it flows from the previous text.
+            """
+            
+            # 4. Generate
+            try:
+                generation_messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Original Request: {user_prompt}"},
+                    {"role": "assistant", "content": f"I have written:\n\n{full_text_buffer}" if full_text_buffer else "I am ready to start."},
+                    {"role": "user", "content": step_prompt}
+                ]
+                
+                chunk_content = self._chat(model_name, generation_messages)
+                
+                if chunk_content:
+                    print(f"\n{'-'*40}\n{chunk_content}\n{'-'*40}")
+                    chunks.append(chunk_content)
+                    full_text_buffer += f"\n\n## {title}\n{chunk_content}"
+                    
+                    # 5. Ingest/Store (Auto-Save)
+                    if self.memory_client:
+                        print("   💾 Saving chunk to memory...", end="", flush=True)
+                        try:
+                            self.memory_client.ingest(chunk_content)
+                            print(" Done.")
+                        except Exception as e:
+                            print(f" Failed: {e}")
                 else:
-                    print(f"\n   🔍 Supervisor: Missing {missing}. Steering...", end="", flush=True)
-                    steering_prompt = f"Great. The narrative is taking shape, but we are missing detailed descriptions of: {', '.join(missing)}. Please write the next section focusing SPECIFICALLY on fleshing out these elements in high detail."
-            else:
-                missing = []
-                steering_prompt = "Continue expounding on this world. Add more specific sections on characters and geography."
+                    print("\n   ⚠️  Empty response for chunk.")
+                    
+            except Exception as e:
+                print(f"\n   ❌ Error generating chunk: {e}")
+                break
                 
-            # 3. Context Management
-            current_context.append({"role": "assistant", "content": chunk})
-            current_context.append({"role": "user", "content": steering_prompt})
-            
-            # Sliding Window (Keep system prompt + last 2 turns)
-            if len(current_context) > 6:
-                # [System, User_Original, ... last_assistant, last_steering]
-                # Actually, keeping User_Original is good for grounding, but maybe we just keep System + Last 3 interactions
-                current_context = [current_context[0]] + current_context[-4:]
-        
-        # Print final consistency report if tracker is active
-        if consistency_tracker:
-            print(consistency_tracker.get_report())
-                
-        return "\n\n".join(chunks), chunks
-
-
-    def _detect_missing_elements(self, model: str, text: str, memory_check_fn=None) -> List[str]:
-        """
-        Analyzes text to see if it qualifies as a 'Complete World'.
-        Returns list of missing aspects.
-        Checks DB if memory_check_fn is provided.
-        """
-        # 1. LLM Analysis of Buffer
-        prompt = f"""
-        Analyze the following story/world description. 
-        Does it contain DETAILED descriptions of:
-        1. Main Characters (Names, appearances, personalities)
-        2. Landscapes/Environments (Sensory details, geography)
-        3. Rules/Systems (Magic, technology, or societal rules)
-        
-        TEXT:
-        {text[-12000:]} 
-        
-        If ALL 3 are present in detail, output "COMPLETE".
-        Otherwise, output a comma-separated list of what is missing (e.g. "Main Characters, Landscapes").
-        Output ONLY the list or "COMPLETE".
-        """
-        
-        candidates = []
-        try:
-            response = ollama.chat(model=model, messages=[{"role": "user", "content": prompt}])
-            result = response['message']['content'].strip()
-            
-            if "COMPLETE" in result.upper():
-                return []
-            
-            lower_res = result.lower()
-            if "character" in lower_res: candidates.append("Main Characters")
-            if "landscape" in lower_res or "environment" in lower_res: candidates.append("Landscapes")
-            if "rule" in lower_res or "system" in lower_res: candidates.append("World Systems")
-        except:
-            return [] 
-
-        # 2. Memory DB Check (Deduplication)
-        if not memory_check_fn or not candidates:
-            return candidates
-            
-        real_missing = []
-        for item in candidates:
-            # Query the DB to see if we already know this
-            # effectively asking: "Do I have Main Characters?"
-            print(f" [DB Check: {item}]...", end="", flush=True)
-            found_in_db = memory_check_fn(item)
-            if found_in_db:
-                 print("Found!", end="", flush=True)
-            else:
-                 print("Missing.", end="", flush=True)
-                 real_missing.append(item)
-                 
-        return real_missing
+        print("\n✅ Generation Complete.")
+        return full_text_buffer, chunks

@@ -232,19 +232,11 @@ class EntityExtractor:
             r'\b([\w-]+\.(?:py|js|ts|java|cpp|c|h|go|rs|md|txt|yaml|yml|json|xml|html|css))\b',  # Common code files
             r'\b([\w-]+/[\w-]+(?:/[\w-]+)*\.\w+)\b',  # File paths
             r'\b([\w-]+\.(?:config|conf|cfg))\b',  # Config files
-            # Original patterns
-            r'\b(Omega Protocol)\b',
-            r'\b(Ghost Signal)\b',
-            r'\b(Commander Reyes)\b',
-            r'\b(Project Titan)\b',
-            r'\b(Moon of Endor)\b',
-            r'\b(Section \d+)\b',
-            r'\b([A-Z][a-z]+ [A-Z][a-z]+)\b',  # Generic fallback (keep last)
-            r'password[^\'\"]*[\'"]([^\'\"]+)[\'"]',  # Passwords
-            r'\b(\d+\.\d+ MHz)\b',             # Frequencies
-            r'\b(vault [A-Z]\d+)\b',           # Vault IDs
-            r'\b(launch code[s]?\s*(?:is\s*)?[\w-]+)\b',  # Launch codes
-            r'\b([A-Z]{3,}-\d+-[A-Z]+)\b',     # Codes like Azure-99-Gamma
+            
+            # Generic Entity Extractors
+            r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', # Generic capitalized phrase
+            r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', # Emails
+            r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+', # URLs
         ]
         self.compiled = [re.compile(p) for p in self.patterns]
 
@@ -333,7 +325,7 @@ class NeuroSavant:
             loaded_tools.append('example')
         
         if HAS_INFINITE_TOOL:
-            self.tools['infinite'] = InfiniteLoopTool()
+            self.tools['infinite'] = InfiniteLoopTool(memory_client=self)
             loaded_tools.append('infinite')
         
         if HAS_INGEST_TOOL:
@@ -386,7 +378,7 @@ class NeuroSavant:
             ids=[cell_id],
             documents=[text],
             embeddings=[vector.tolist()],
-            metadatas=[{"group_id": group_id}]
+            metadatas=[{"group_id": group_id, "creation_timestamp": time.time()}]
         )
         
         # 5. Update Entity Index (use upsert to handle duplicates)
@@ -425,21 +417,23 @@ class NeuroSavant:
         for i, text in enumerate(texts):
             vector = vectors[i]
             
-            # Find Group (Online Clustering)
+            # Vectorized Group Finding (Online Clustering)
             best_group_id = None
             min_dist = float('inf')
             
-            # Check cache + local batch updates
-            # Note: For perfect accuracy in batch, we should update cache immediately?
-            # Yes, otherwise all items in batch might create new groups if they are similar to each other.
-            # But updating cache is cheap.
-            
             if self.group_cache:
-                for gid, data in self.group_cache.items():
-                    dist = 1 - np.dot(vector, data['centroid'])
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_group_id = gid
+                gids = list(self.group_cache.keys())
+                centroids = np.array([self.group_cache[gid]['centroid'] for gid in gids])
+                
+                # Vector-matrix multiplication for fast similarity (N, D) x (D,) -> (N,)
+                similarities = np.dot(centroids, vector)
+                
+                best_idx = np.argmax(similarities)
+                max_sim = similarities[best_idx]
+                min_dist = 1.0 - max_sim
+                
+                if min_dist < self.config.similarity_threshold:
+                    best_group_id = gids[best_idx]
             
             # Decision
             # Decision
@@ -470,23 +464,23 @@ class NeuroSavant:
                 group_id = group_id
                 
             # Cell Data
-            cell_id = f"cell_{hashlib.md5(text.encode()).hexdigest()}"
+            cell_id = f"cell_{hashlib.md5(text.encode()).hexdigest()}_{i}"
             cell_ids.append(cell_id)
             cell_docs.append(text)
             cell_embs.append(vector.tolist())
-            cell_metas.append({"group_id": group_id})
+            cell_metas.append({"group_id": group_id, "creation_timestamp": time.time()})
             
             # Entity Data
             entities = self.extractor.extract(text)
-            for entity in entities:
-                eid = f"idx_{hashlib.md5((entity + group_id).encode()).hexdigest()}"
+            for e_idx, entity in enumerate(entities):
+                eid = f"idx_{hashlib.md5((entity + group_id).encode()).hexdigest()}_{i}_{e_idx}"
                 entity_ids.append(eid)
                 entity_docs.append(entity)
                 entity_metas.append({"group_id": group_id, "entity": entity})
                 
         # 3. Bulk Write
         # Cells
-        self.cells.add(
+        self.cells.upsert(
             ids=cell_ids,
             documents=cell_docs,
             embeddings=cell_embs,
@@ -507,7 +501,7 @@ class NeuroSavant:
         
         # Entities
         if entity_ids:
-            self.entity_index.add(
+            self.entity_index.upsert(
                 ids=entity_ids,
                 documents=entity_docs,
                 metadatas=entity_metas
@@ -660,10 +654,10 @@ class NeuroSavant:
     def consolidate_memory(self):
         """
         Sleep Mode: Merges similar groups to compact the index.
+        Uses greedy vectorized consolidation to avoid O(N^2) memory explosion.
         """
         print("Starting Sleep Mode Consolidation...")
         
-        # 1. Fetch all groups
         all_groups = self.groups.get(include=['embeddings', 'metadatas'])
         if not all_groups['ids']:
             print("No groups to consolidate.")
@@ -673,46 +667,47 @@ class NeuroSavant:
         embeddings = np.array(all_groups['embeddings'])
         metadatas = all_groups['metadatas']
         
-        # 2. Compute Pairwise Similarity
+        n_groups = len(ids)
+        if n_groups < 2:
+            return
+        
         # Normalize embeddings just in case
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         embeddings = embeddings / (norms + 1e-10)
         
-        sim_matrix = np.dot(embeddings, embeddings.T)
-        
-        # 3. Find Merge Candidates
         merged_indices = set()
         merges = 0
         
-        for i in range(len(ids)):
+        # Batch similarities calculation (One-vs-Rest)
+        for i in range(n_groups):
             if i in merged_indices:
                 continue
                 
-            for j in range(i + 1, len(ids)):
+            target_id = ids[i]
+            vec_i = embeddings[i]
+            count_i = metadatas[i].get('count', 1) if metadatas[i] else 1
+            
+            # (N, D) x (D,) -> (N,)
+            sims = np.dot(embeddings, vec_i)
+            
+            for j in range(i + 1, n_groups):
                 if j in merged_indices:
                     continue
                     
-                sim = sim_matrix[i, j]
-                if sim > self.config.merge_threshold:
-                    # Merge Group J into Group I
-                    target_id = ids[i]
+                if sims[j] > self.config.merge_threshold:
                     source_id = ids[j]
+                    count_j = metadatas[j].get('count', 1) if metadatas[j] else 1
                     
-                    print(f"Merging Group {source_id} -> {target_id} (Sim: {sim:.3f})")
+                    print(f"Merging Group {source_id} -> {target_id} (Sim: {sims[j]:.3f})")
                     
                     # Update Cells
-                    # Chroma requires IDs for update. Fetch them first.
                     source_cells = self.cells.get(where={"group_id": source_id})
                     if source_cells['ids']:
                         new_metas = []
                         for m in source_cells['metadatas']:
                             m['group_id'] = target_id
                             new_metas.append(m)
-                            
-                        self.cells.update(
-                            ids=source_cells['ids'],
-                            metadatas=new_metas
-                        )
+                        self.cells.update(ids=source_cells['ids'], metadatas=new_metas)
 
                     # Update Entity Index
                     source_entities = self.entity_index.get(where={"group_id": source_id})
@@ -721,20 +716,10 @@ class NeuroSavant:
                         for m in source_entities['metadatas']:
                             m['group_id'] = target_id
                             new_ent_metas.append(m)
-                            
-                        self.entity_index.update(
-                            ids=source_entities['ids'],
-                            metadatas=new_ent_metas
-                        )
+                        self.entity_index.update(ids=source_entities['ids'], metadatas=new_ent_metas)
                     
                     # Update Target Centroid
-                    # Weighted average based on counts
-                    count_i = metadatas[i].get('count', 1)
-                    count_j = metadatas[j].get('count', 1)
-                    
-                    vec_i = embeddings[i]
                     vec_j = embeddings[j]
-                    
                     new_centroid = (vec_i * count_i + vec_j * count_j) / (count_i + count_j)
                     new_centroid = new_centroid / np.linalg.norm(new_centroid)
                     
@@ -747,23 +732,94 @@ class NeuroSavant:
                     # Delete Source Group
                     self.groups.delete(ids=[source_id])
                     
-                    # Update local cache/variables to reflect merge
-                    # (Simplified: just mark as merged and skip)
+                    merged_indices.add(j)
                     merges += 1
                     
-                    # Update embedding i for future comparisons in this loop
+                    # Update iteration state
                     embeddings[i] = new_centroid
-                    # Update metadata count i for future weighted averages in this loop
+                    vec_i = new_centroid
+                    count_i += count_j
                     if metadatas[i] is None: metadatas[i] = {}
-                    metadatas[i]['count'] = count_i + count_j
-                    
-                    # Update embedding i for future comparisons in this loop? 
-                    # Ideally yes, but for one pass it's okay to use old centroid.
+                    metadatas[i]['count'] = count_i
                     
         print(f"Consolidation Complete. Merged {merges} groups.")
         # Reload cache
         self.group_cache = {}
         self._load_groups()
+
+    def _run_conflict_analysis_agent(self, cell_contents: List[str]) -> Optional[str]:
+        """
+        Uses an LLM to analyze a list of memory cells for contradictions.
+        """
+        if not HAS_OLLAMA or not self.config.use_agentic:
+            return None
+
+        # TODO: This needs a more robust implementation to handle large contexts
+        # and parse the output reliably.
+        
+        system_prompt = """You are a meticulous AI analyst. Your task is to examine the following statements and identify any direct contradictions.
+
+Respond in one of two ways:
+1. If there are no contradictions, respond with "NO_CONFLICTS".
+2. If you find contradictions, respond with a brief analysis explaining the conflicting points.
+
+Statements:
+"""
+        
+        full_prompt = system_prompt + "\n".join([f"- {c}" for c in cell_contents])
+
+        try:
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": self.config.model_name,
+                    "prompt": full_prompt,
+                    "stream": False
+                }
+            )
+            if response.status_code == 200:
+                analysis = response.json().get('response', '').strip()
+                if analysis and "NO_CONFLICTS" not in analysis:
+                    return analysis
+        except Exception as e:
+            print(f"ERROR: Conflict analysis agent failed: {e}")
+        
+        return None
+
+    def agentic_consolidation(self):
+        """
+        Agentic Sleep Mode: Analyzes groups for semantic conflicts.
+        """
+        print("🧠 Starting Agentic Sleep Mode...")
+        all_groups = self.groups.get()
+        if not all_groups['ids']:
+            print("No groups to analyze.")
+            return
+
+        conflicts_found = 0
+        for group_id in all_groups['ids']:
+            cells_in_group = self.cells.get(where={"group_id": group_id}, include=["documents"])
+            
+            # We only need to check for conflicts if there's more than one memory
+            if len(cells_in_group['ids']) > 1:
+                print(f"Analyzing group {group_id} with {len(cells_in_group['ids'])} cells...")
+                
+                documents = cells_in_group['documents']
+                
+                # Run agentic analysis
+                conflict_analysis = self._run_conflict_analysis_agent(documents)
+
+                if conflict_analysis:
+                    conflicts_found += 1
+                    print("\n" + "="*25 + " CONFLICT DETECTED " + "="*25)
+                    print(f"Group ID: {group_id}")
+                    print(f"Analysis: {conflict_analysis}")
+                    print("Cells in conflict:")
+                    for doc in documents:
+                        print(f"  - {doc.strip()}")
+                    print("="*70 + "\n")
+
+        print(f"Agentic Sleep Mode finished. Found {conflicts_found} potential conflicts.")
 
     def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
         """Execute a tool call from the LLM"""
@@ -833,6 +889,25 @@ class NeuroSavant:
         full_reply = ""
         ollama_start = time.perf_counter()
         try:
+            # 1.5 Infinite Mode Delegation
+            if 'infinite' in self.tools and self.tools['infinite'].active:
+                print(f"   ∞ Delegating to Infinite Loop Tool...")
+                # We use the raw user input as the prompt for the sequence
+                full_text, chunks = self.tools['infinite'].generate_sequence(
+                    model_name=self.config.model_name,
+                    system_prompt=f"You are a helpful AI assistant with access to a vast memory database.",
+                    user_prompt=user_input
+                )
+                # The tool handles its own printing/streaming usually, but we return the full text
+                # We also need to manually ingest the result here if the tool didn't do it per-chunk?
+                # The plan says the tool will do per-chunk ingest.
+                # So we just return the full text for the chat history/display.
+                
+                # Record performance
+                total_time = (time.perf_counter() - total_start) * 1000
+                print(f"\n⏱️  Infinite Generation Complete | Total: {total_time:.0f}ms")
+                return full_text
+
             messages = [
                 {"role": "system", "content": f"You are a helpful AI assistants with advanced memory.\n\nRELEVANT MEMORY CONTEXT:\n{context[:4000]}"},
                 {"role": "user", "content": user_input}
@@ -1047,6 +1122,8 @@ def main():
 """)
             elif user_input == "/status":
                 agent.status()
+            elif user_input == "/sleep":
+                agent.agentic_consolidation()
             elif user_input == "/clean":
                 confirm = input("⚠️  Are you sure you want to WIPE ALL MEMORY? (y/n): ").lower()
                 if confirm == 'y':
@@ -1132,7 +1209,7 @@ def main():
                 else:
                     print("⚠️  Infinite tool not available")
             elif user_input.startswith("/story "):
-                if HAS_TOOLS:
+                if HAS_STORYLINE_TOOL:
                     try:
                         topic = user_input[7:].strip()
                         story_agent = StorylineAgent(agent)
