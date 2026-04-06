@@ -1,163 +1,139 @@
+"""Workflow stress test for the story subsystem."""
 
-import sys
 import os
-import time
-import json
+import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
-# Add parent directory (project root) to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.modules.setdefault("ollama", MagicMock())
 
-# Import our system components
-# Note: Adjusting imports based on apparent file structure
-# Pre-mock dependencies that might be missing in test env
-from unittest.mock import MagicMock
-sys.modules['chromadb'] = MagicMock()
-sys.modules['ollama'] = MagicMock()
-sys.modules['networkx'] = MagicMock()
+from tools.agent_behavior import AgentBehaviorTool
+from tools.example import ExampleTool
+from tools.infinite import InfiniteLoopTool
+from tools.storyline_agent import StorylineAgent
 
-try:
-    from neuro_savant import NeuroSavant
-    from tools.storyline_agent import StorylineAgent
-    from tools.infinite import InfiniteLoopTool
-    from tools.agent_behavior import AgentBehaviorTool
-    from tools.example import ExampleTool
-except ImportError:
-    sys.path.append(os.path.join(os.getcwd(), 'tools'))
-    import neuro_savant
-    from tools.storyline_agent import StorylineAgent
-    from tools.infinite import InfiniteLoopTool
-    from tools.agent_behavior import AgentBehaviorTool
-    from tools.example import ExampleTool
+
+class FakeBrain:
+    def __init__(self):
+        self.config = type("Config", (), {"model_name": "mock-model"})()
+        self.ingest = MagicMock()
+        self.tools = {
+            "behavior": AgentBehaviorTool(),
+            "example": ExampleTool(),
+            "infinite": InfiniteLoopTool(),
+        }
+
+        self.behavior_tool = self.tools["behavior"]
+        self.example_tool = self.tools["example"]
+        self.infinite_tool = self.tools["infinite"]
+
 
 class TestStorylineSystem(unittest.TestCase):
-    
     def setUp(self):
-        print("\n" + "="*50)
-        print("SETUP: Initializing System Agents")
-        print("="*50)
-        
-        # 1. Initialize Brain (Mocking DB to avoid persistent side effects)
-        # We patch the database parts of NeuroSavant to avoid disk writes
-        with patch('neuro_savant.chromadb.PersistentClient'), \
-             patch('neuro_savant.os.makedirs'):
-            try:
-                self.brain = neuro_savant.NeuroSavant(model_name="mock-model")
-                # Mock the memory grid explicitly to capture writes
-                self.brain.memory = MagicMock()
-                self.brain.memory._generate_id_from_content.side_effect = lambda x: f"hash_{len(x)}"
-                print("✅ NeuroSavant Brain Initialized (Mocked Memory)")
-            except Exception as e:
-                print(f"⚠️ Failed to init real brain, using dummy: {e}")
-                self.brain = MagicMock()
-                self.brain.model_name = "mock-model"
-
-        # 2. Attach Tools
-        self.brain.infinite_tool = InfiniteLoopTool()
-        self.brain.behavior_tool = AgentBehaviorTool()
-        self.brain.example_tool = ExampleTool()
-        print("✅ Tools Attached: Infinite, Behavior, Example")
-        
-        # 3. Initialize Agent
+        self.brain = FakeBrain()
         self.agent = StorylineAgent(self.brain)
-        print("✅ StorylineAgent Initialized")
 
-    @patch('ollama.chat')
+    @patch("ollama.chat")
+    def test_world_config_parser_accepts_python_style_payload(self, mock_chat):
+        mock_chat.return_value = {
+            "message": {
+                "content": """```python
+                {
+                    'magic_system': {'source': 'Aether', 'cost': 'Heat', 'hard_restriction': 'No teleportation'},
+                    'biomes': {'name': 'Glass Desert', 'visual_prompt': 'Mirror dunes', 'hazard_level': 8},
+                    'civilizations': {'settlement_style': 'Nomadic', 'defense_strategy': 'Decoys'}
+                }
+                ```"""
+            }
+        }
+
+        config = self.agent._create_world_config("Mirror Empire")
+
+        self.assertEqual(config["magic_system"]["source"], "Aether")
+        self.assertEqual(len(config["biomes"]), 1)
+        self.assertEqual(config["civilization"]["settlement_style"], "Nomadic")
+        self.assertNotIn("_warning", config)
+
+    @patch("ollama.chat")
+    def test_world_config_retries_placeholder_payloads(self, mock_chat):
+        mock_chat.side_effect = [
+            {
+                "message": {
+                    "content": """```json
+                    {
+                        "magic_system": {"source": "...", "cost": "...", "hard_restriction": "..."},
+                        "biomes": [{"name": "...", "visual_prompt": "...", "hazard_level": 1}],
+                        "civilization": {"settlement_style": "...", "defense_strategy": "..."}
+                    }
+                    ```"""
+                }
+            },
+            {
+                "message": {
+                    "content": """{
+                        "magic_system": {"source": "Steam rites", "cost": "Copper dust", "hard_restriction": "No time reversal"},
+                        "biomes": [{"name": "Brass Marsh", "visual_prompt": "Foggy gears", "hazard_level": 6}],
+                        "civilization": {"settlement_style": "Tiered foundries", "defense_strategy": "Automaton walls"}
+                    }"""
+                }
+            },
+        ]
+
+        config = self.agent._create_world_config("Clockwork Republic")
+
+        self.assertEqual(config["magic_system"]["source"], "Steam rites")
+        self.assertEqual(config["civilization"]["defense_strategy"], "Automaton walls")
+        self.assertEqual(mock_chat.call_count, 2)
+
+    @patch("ollama.chat")
     def test_full_workflow_stress(self, mock_chat):
-        """
-        Stress Test Scenario:
-        1. Enable Infinite Mode (Massive generation)
-        2. Set Persona (Modify style)
-        3. Load Template (Modify context)
-        4. Run Workflow (Trigger multiple calls)
-        """
-        print("\n🚀 STARTING STRESS TEST: 'Galactic Senate Crisis'")
-        
-        # A. Setup Tools
         self.brain.infinite_tool.execute("on")
-        self.brain.infinite_tool.execute("set_chunks 5") # Generate 5 chunks per section
+        self.brain.infinite_tool.execute("set_chunks 5")
         self.brain.behavior_tool.execute("set critic")
         self.brain.example_tool.execute("load technical")
-        
-        # B. Configure Mock Responses
+
+        generation_context_sizes = []
+
         def side_effect(model, messages):
-            # Check who is calling (System prompt clues)
-            system_content = messages[0]['content']
-            user_content = messages[-1]['content']
-            
-            # 1. JSON Config Call
-            if "JSON generator" in system_content:
+            first_content = messages[0]["content"]
+
+            if "JSON generator" in first_content:
                 return {
-                    'message': {
-                        'content': '''```json
+                    "message": {
+                        "content": """```json
                         {
                             "magic_system": { "source": "Void", "cost": "Sanity", "hard_restriction": "No resurrection" },
-                            "biomes": [ 
+                            "biomes": [
                                 {"name": "Crystal Wastes", "visual_prompt": "Shiny", "hazard_level": 9},
-                                {"name": "Iron Forests", "visual_prompt": "Rusty", "hazard_level": 5}, 
+                                {"name": "Iron Forests", "visual_prompt": "Rusty", "hazard_level": 5},
                                 {"name": "Neon Slums", "visual_prompt": "Cyberpunk", "hazard_level": 3}
                             ],
                             "civilization": { "settlement_style": "Vertical", "defense_strategy": "Shields" }
                         }
-                        ```'''
+                        ```"""
                     }
                 }
-            
-            # 2. Summarizer Call
-            if "Summarize this text" in system_content:
-                return {'message': {'content': "SUMMARY: This section discusses complex political maneuvers..."}}
-                
-            # 3. Generation Call (Infinite or Normal)
-            # Return a large chunk to stress memory
-            return {'message': {'content': f"GENERATED CONTENT ({len(messages)} msgs). " + "Lore " * 50}}
+
+            if "Summarize this text" in first_content:
+                return {"message": {"content": "SUMMARY: This section discusses complex political maneuvers."}}
+
+            if "Analyze the following story/world description" in first_content:
+                return {"message": {"content": "Main Characters, Landscapes, World Systems"}}
+
+            generation_context_sizes.append(len(messages))
+            return {"message": {"content": "GENERATED CONTENT. " + ("Lore " * 150)}}
 
         mock_chat.side_effect = side_effect
-        
-        # C. Execute Workflow
-        topic = "The Collapse of the Galactic Senate"
-        self.agent.execute_workflow(topic)
-        
-        # D. Verifications
-        print("\n📊 ANALYZING RESULTS...")
-        
-        # 1. Check Tool Usage in Logic
-        # We can't easily check internal python state changes of the tool unless we inspect side effects,
-        # but we can check if the agent *accessed* them.
-        # Since we are running the real code of StorylineAgent, it DEFINITELY called them if lines were hit.
-        
-        # 2. Verify Call Counts
-        # Config (1) + 3 Sections * (Infinite 5 chunks) + 3 Verification Summaries
-        # Actually logic is: 
-        #   1. Config -> 1 call
-        #   2. Loop 3 sections:
-        #       - Generate (Infinite tool handles the loop internally)
-        #           - Infinite tool does 'chunk_limit' calls (5)
-        #       - Verify (1 check, no LLM call in current dummy verifier)
-        #       - Summarize -> 1 call
-        # Total expected = 1 + 3*(5 + 1) = 1 + 18 = 19 calls
-        
-        call_count = mock_chat.call_count
-        print(f"   - LLM Call Count: {call_count} (Expected ~19)")
-        self.assertGreater(call_count, 10, "Should have made significant number of LLM calls")
-        
-        # 3. Verify Memory Writes
-        # Each section: 1 Master + 5 Chunks = 6 writes
-        # Total = 3 * 6 = 18 writes
-        write_count = self.brain.memory.update_state_immediate.call_count
-        print(f"   - Memory Writes: {write_count} (Expected ~18)")
-        self.assertGreater(write_count, 10, "Should have saved chunks to memory")
-        
-        # 4. Verify Infinite Tool Logic
-        # It creates a 'sliding window' of context. We can check the last call's context length.
-        last_call_args = mock_chat.call_args[1]
-        last_messages = last_call_args['messages']
-        print(f"   - Context Window Size (Last Call): {len(last_messages)}")
-        # Expecting System + User + (Assistant+User)*Depth. 
-        # infinite.py limits context to size 6.
-        self.assertLessEqual(len(last_messages), 10, "Infinite tool should manage context window size")
 
-        print("✅ STRESS TEST PASSED")
+        facts = self.agent.execute_workflow("The Collapse of the Galactic Senate")
 
-if __name__ == '__main__':
+        self.assertIsInstance(facts, dict)
+        self.assertEqual(self.brain.ingest.call_count, 18)
+        self.assertEqual(len(generation_context_sizes), 15)
+        self.assertTrue(all(size <= 5 for size in generation_context_sizes))
+        self.assertEqual(mock_chat.call_count, 31)
+
+
+if __name__ == "__main__":
     unittest.main()

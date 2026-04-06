@@ -26,6 +26,14 @@ import requests
 import json
 HAS_OLLAMA = True
 
+for stream_name in ("stdout", "stderr"):
+    stream = getattr(sys, stream_name, None)
+    if stream and hasattr(stream, "reconfigure"):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
 # Import performance tracker
 try:
     from core.performance_tracker import PerformanceTracker, VisualDisplay
@@ -263,6 +271,7 @@ class NeuroSavant:
     def __init__(self, config: Config = Config()):
         self.config = config
         self.client = chromadb.PersistentClient(path=config.db_path)
+        use_mock = os.environ.get("USE_MOCK_ENCODER", "false").lower() == "true"
         
         # Load Encoder - Try Ollama first, then SentenceTransformer, then Mock
         try:
@@ -270,7 +279,7 @@ class NeuroSavant:
             test_response = requests.get("http://localhost:11434/api/tags", timeout=2)
             if test_response.status_code == 200:
                 self.encoder = OllamaEncoder(model=config.embed_model)
-                print(f"✓ Using Ollama embeddings: {config.embed_model}")
+                print(f"INFO: Using Ollama embeddings: {config.embed_model}")
             else:
                 raise Exception("Ollama not responding")
         except:
@@ -286,7 +295,10 @@ class NeuroSavant:
             else:
                 print("WARNING: Using MockEncoder (no Ollama or SentenceTransformer).")
                 self.encoder = MockEncoder()
-            
+        if use_mock:
+            print("WARNING: Overriding encoder with MockEncoder (USE_MOCK_ENCODER=true).")
+            self.encoder = MockEncoder()
+
         self.extractor = EntityExtractor()
         
         # Get encoder dimension
@@ -297,6 +309,8 @@ class NeuroSavant:
         class NoOpEmbeddingFunction:
             def __init__(self, dim):
                 self.dim = dim
+            def name(self):
+                return "default"
             def __call__(self, input):
                 # This should never be called since we always pass embeddings directly
                 return [[0.0] * self.dim for _ in input]
@@ -323,25 +337,61 @@ class NeuroSavant:
         # Initialize tools
         self.tools = {}
         loaded_tools = []
+        self.behavior_tool = None
+        self.example_tool = None
+        self.infinite_tool = None
+        self.ingest_tool = None
         
         if HAS_BEHAVIOR_TOOL:
             self.tools['behavior'] = AgentBehaviorTool()
+            self.behavior_tool = self.tools['behavior']
             loaded_tools.append('behavior')
         
         if HAS_EXAMPLE_TOOL:
             self.tools['example'] = ExampleTool()
+            self.example_tool = self.tools['example']
             loaded_tools.append('example')
         
         if HAS_INFINITE_TOOL:
             self.tools['infinite'] = InfiniteLoopTool()
+            self.infinite_tool = self.tools['infinite']
             loaded_tools.append('infinite')
         
         if HAS_INGEST_TOOL:
             self.tools['ingest'] = GitHubIngestTool(memory_grid=self)
+            self.ingest_tool = self.tools['ingest']
             loaded_tools.append('ingest')
         
         if loaded_tools:
-            print(f"✓ Tools loaded: {', '.join(loaded_tools)}")
+            print(f"INFO: Tools loaded: {', '.join(loaded_tools)}")
+
+    @property
+    def model_name(self) -> str:
+        return self.config.model_name
+
+    @model_name.setter
+    def model_name(self, value: str):
+        self.config.model_name = value
+
+    def _cell_id(self, text: str) -> str:
+        return f"cell_{hashlib.md5(text.encode()).hexdigest()}"
+
+    def _normalize_vector(self, vector: np.ndarray) -> np.ndarray:
+        norm = np.linalg.norm(vector)
+        if norm <= 1e-12:
+            return vector
+        return vector / norm
+
+    def _get_existing_ids(self, collection, ids: List[str]) -> Set[str]:
+        if not ids:
+            return set()
+
+        try:
+            existing = collection.get(ids=ids)
+        except Exception:
+            return set()
+
+        return set(existing.get('ids', []) or [])
 
     def _load_groups(self):
         try:
@@ -358,46 +408,49 @@ class NeuroSavant:
             pass
 
     def ingest(self, text: str):
-        # 1. Create Cell Vector
+        cell_id = self._cell_id(text)
+        if cell_id in self._get_existing_ids(self.cells, [cell_id]):
+            return False
+
         vector = self.encoder.encode([text])[0]
-        
-        # 2. Find Nearest Group (Online Clustering)
+
         best_group_id = None
         min_dist = float('inf')
-        
+
         if self.group_cache:
             for gid, data in self.group_cache.items():
                 dist = 1 - np.dot(vector, data['centroid'])
                 if dist < min_dist:
                     min_dist = dist
                     best_group_id = gid
-        
-        # 3. Decision: Join or Create
+
         if best_group_id and min_dist < self.config.similarity_threshold:
             self._update_group(best_group_id, vector)
             group_id = best_group_id
         else:
             group_id = f"group_{int(time.time()*1000)}_{hash(text)%1000}"
             self._create_group(group_id, vector)
-            
-        # 4. Store Cell (use upsert to handle duplicates)
-        cell_id = f"cell_{hashlib.md5(text.encode()).hexdigest()}"
+
         self.cells.upsert(
             ids=[cell_id],
             documents=[text],
             embeddings=[vector.tolist()],
             metadatas=[{"group_id": group_id}]
         )
-        
-        # 5. Update Entity Index (use upsert to handle duplicates)
+
         entities = self.extractor.extract(text)
-        for entity in entities:
-            eid = f"idx_{hashlib.md5((entity + group_id).encode()).hexdigest()}"
-            self.entity_index.upsert(
-                ids=[eid],
-                documents=[entity],
-                metadatas=[{"group_id": group_id, "entity": entity}]
-            )
+        if entities:
+            entity_vectors = self.encoder.encode(entities)
+            for entity, entity_vector in zip(entities, entity_vectors):
+                eid = f"idx_{hashlib.md5((entity + group_id).encode()).hexdigest()}"
+                self.entity_index.upsert(
+                    ids=[eid],
+                    documents=[entity],
+                    embeddings=[entity_vector.tolist()],
+                    metadatas=[{"group_id": group_id, "entity": entity}]
+                )
+
+        return True
 
     def batch_ingest(self, texts: List[str]):
         """
@@ -405,9 +458,30 @@ class NeuroSavant:
         """
         if not texts:
             return
-            
-        # 1. Batch Encode
-        vectors = self.encoder.encode(texts)
+
+        deduped_texts = []
+        deduped_cell_ids = []
+        seen_cell_ids = set()
+
+        for text in texts:
+            cell_id = self._cell_id(text)
+            if cell_id in seen_cell_ids:
+                continue
+            seen_cell_ids.add(cell_id)
+            deduped_texts.append(text)
+            deduped_cell_ids.append(cell_id)
+
+        existing_cell_ids = self._get_existing_ids(self.cells, deduped_cell_ids)
+        pending_items = [
+            (text, cell_id)
+            for text, cell_id in zip(deduped_texts, deduped_cell_ids)
+            if cell_id not in existing_cell_ids
+        ]
+
+        if not pending_items:
+            return
+
+        vectors = self.encoder.encode([text for text, _ in pending_items])
         
         # Prepare batch data
         cell_ids = []
@@ -420,9 +494,10 @@ class NeuroSavant:
         entity_ids = []
         entity_docs = []
         entity_metas = []
+        entity_embs = []
         
         # 2. Process each text
-        for i, text in enumerate(texts):
+        for i, (text, cell_id) in enumerate(pending_items):
             vector = vectors[i]
             
             # Find Group (Online Clustering)
@@ -452,7 +527,7 @@ class NeuroSavant:
                 n = data['count']
                 old_centroid = data['centroid']
                 new_centroid = (old_centroid * n + vector) / (n + 1)
-                new_centroid = new_centroid / np.linalg.norm(new_centroid)
+                new_centroid = self._normalize_vector(new_centroid)
                 
                 data['centroid'] = new_centroid
                 data['count'] = n + 1
@@ -462,15 +537,14 @@ class NeuroSavant:
             else:
                 # Create
                 group_id = f"group_{int(time.time()*1000)}_{i}_{hash(text)%1000}"
-                # self._create_group(group_id, vector) # OLD: called DB add
+                normalized = self._normalize_vector(vector)
                 
                 # Update Cache & Buffer for later Batch Add/Upsert
-                self.group_cache[group_id] = {'centroid': vector, 'count': 1}
-                group_upserts[group_id] = {'centroid': vector, 'count': 1} # Treating new as upsert is fine for buffer logic if we handle it
+                self.group_cache[group_id] = {'centroid': normalized, 'count': 1}
+                group_upserts[group_id] = {'centroid': normalized, 'count': 1}
                 group_id = group_id
                 
             # Cell Data
-            cell_id = f"cell_{hashlib.md5(text.encode()).hexdigest()}"
             cell_ids.append(cell_id)
             cell_docs.append(text)
             cell_embs.append(vector.tolist())
@@ -486,7 +560,7 @@ class NeuroSavant:
                 
         # 3. Bulk Write
         # Cells
-        self.cells.add(
+        self.cells.upsert(
             ids=cell_ids,
             documents=cell_docs,
             embeddings=cell_embs,
@@ -507,17 +581,28 @@ class NeuroSavant:
         
         # Entities
         if entity_ids:
-            self.entity_index.add(
+            unique_entities = {}
+            for entity_id, entity_doc, entity_meta in zip(entity_ids, entity_docs, entity_metas):
+                unique_entities[entity_id] = (entity_doc, entity_meta)
+
+            entity_ids = list(unique_entities.keys())
+            entity_docs = [unique_entities[entity_id][0] for entity_id in entity_ids]
+            entity_metas = [unique_entities[entity_id][1] for entity_id in entity_ids]
+            entity_vectors = self.encoder.encode(entity_docs)
+            entity_embs = [vector.tolist() for vector in entity_vectors]
+            self.entity_index.upsert(
                 ids=entity_ids,
                 documents=entity_docs,
+                embeddings=entity_embs,
                 metadatas=entity_metas
             )
 
     def _create_group(self, group_id: str, vector: np.ndarray):
-        self.group_cache[group_id] = {'centroid': vector, 'count': 1}
+        normalized = self._normalize_vector(vector)
+        self.group_cache[group_id] = {'centroid': normalized, 'count': 1}
         self.groups.add(
             ids=[group_id],
-            embeddings=[vector.tolist()],
+            embeddings=[normalized.tolist()],
             metadatas=[{"count": 1}]
         )
 
@@ -527,7 +612,7 @@ class NeuroSavant:
         old_centroid = data['centroid']
         
         new_centroid = (old_centroid * n + new_vector) / (n + 1)
-        new_centroid = new_centroid / np.linalg.norm(new_centroid)
+        new_centroid = self._normalize_vector(new_centroid)
         
         data['centroid'] = new_centroid
         data['count'] = n + 1
@@ -736,7 +821,7 @@ class NeuroSavant:
                     vec_j = embeddings[j]
                     
                     new_centroid = (vec_i * count_i + vec_j * count_j) / (count_i + count_j)
-                    new_centroid = new_centroid / np.linalg.norm(new_centroid)
+                    new_centroid = self._normalize_vector(new_centroid)
                     
                     self.groups.update(
                         ids=[target_id],
@@ -746,6 +831,7 @@ class NeuroSavant:
                     
                     # Delete Source Group
                     self.groups.delete(ids=[source_id])
+                    merged_indices.add(j)
                     
                     # Update local cache/variables to reflect merge
                     # (Simplified: just mark as merged and skip)
@@ -838,7 +924,7 @@ class NeuroSavant:
                 {"role": "user", "content": user_input}
             ]
             
-            print("🤖 Assistant: ", end="", flush=True)
+            print("Assistant: ", end="", flush=True)
             
             # Use direct HTTP request to avoid Pydantic V2 conflict
             response = requests.post(
@@ -852,7 +938,7 @@ class NeuroSavant:
             )
             
             if response.status_code != 200:
-                print(f"\n⚠️  Ollama API error: {response.text}")
+                print(f"\nWARN: Ollama API error: {response.text}")
                 return "Error connecting to Ollama."
 
             for line in response.iter_lines():
@@ -869,7 +955,7 @@ class NeuroSavant:
             print()
             
         except Exception as e:
-            print(f"\n⚠️  Generation error: {e}")
+            print(f"\nWARN: Generation error: {e}")
             full_reply = "I apologize, but I encountered an error communicating with the model."
         
         ollama_time = (time.perf_counter() - ollama_start) * 1000
@@ -884,7 +970,10 @@ class NeuroSavant:
         total_time = (time.perf_counter() - total_start) * 1000
         
         # Show timing breakdown
-        print(f"\n⏱️  Query: {query_time:.0f}ms | Ollama: {ollama_time:.0f}ms | Ingest: {ingest_time:.0f}ms | Total: {total_time:.0f}ms")
+        print(
+            f"\nTiming: Query {query_time:.0f}ms | Ollama {ollama_time:.0f}ms | "
+            f"Ingest {ingest_time:.0f}ms | Total {total_time:.0f}ms"
+        )
         
         # Record performance if tracker available
         if self.perf_tracker:
@@ -902,16 +991,16 @@ class NeuroSavant:
         except:
             cell_count = group_count = entity_count = 0
         
-        print("\n" + "="*60)
-        print("🧠 NEURO-SAVANT STATUS")
-        print("="*60)
+        print("\n" + "=" * 60)
+        print("NEURO-SAVANT STATUS")
+        print("=" * 60)
         print(f"  Database Path: {self.config.db_path}")
         print(f"  Model: {self.config.model_name}")
         print(f"  Total Cells: {cell_count}")
         print(f"  Total Groups: {group_count}")
         print(f"  Entity Index: {entity_count}")
         print(f"  Tools Loaded: {len(self.tools)}")
-        print("="*60 + "\n")
+        print("=" * 60 + "\n")
         
         # Show visual if available
         if self.visual:
@@ -919,12 +1008,12 @@ class NeuroSavant:
 
     def shutdown(self):
         """Clean shutdown"""
-        print("💤 Shutting down...")
+        print("Shutting down...")
         # No background threads to stop in this version yet
         
     def clear_memory(self):
         """Wipe all memory data (works while running)"""
-        print("🧹 Cleaning memory...")
+        print("Cleaning memory...")
         try:
             # Clear all collections using ChromaDB's delete API
             collections = [self.cells, self.groups, self.entity_index]
@@ -941,15 +1030,15 @@ class NeuroSavant:
                             collection.delete(ids=batch)
                             total_deleted += len(batch)
                 except Exception as e:
-                    print(f"  ⚠️  Error clearing collection: {e}")
+                    print(f"  WARN: Error clearing collection: {e}")
             
             # Clear in-memory cache
             self.group_cache = {}
             
-            print(f"  ✅ Memory wiped! Deleted {total_deleted} items.")
+            print(f"  OK: Memory wiped. Deleted {total_deleted} items.")
             
         except Exception as e:
-            print(f"❌ Failed to clear memory: {e}")
+            print(f"ERROR: Failed to clear memory: {e}")
 
 
 # ============================================================================
@@ -985,24 +1074,24 @@ def parse_args():
 def main():
     args = parse_args()
     
-    print("="*60)
-    print("🧠 NEURO-SAVANT v2.0 - Cellular Memory Architecture")
-    print("="*60 + "\n")
+    print("=" * 60)
+    print("NEURO-SAVANT v2.0 - Cellular Memory Architecture")
+    print("=" * 60 + "\n")
     
-    print(f"✓ LLM Model: {args.model}")
-    print(f"✓ Embed Model: {args.embed}")
-    print(f"✓ Database: {args.db}\n")
+    print(f"LLM Model: {args.model}")
+    print(f"Embed Model: {args.embed}")
+    print(f"Database: {args.db}\n")
     
     try:
         config = Config(db_path=args.db, model_name=args.model, embed_model=args.embed)
         agent = NeuroSavant(config)
     except Exception as e:
-        print(f"❌ Init failed: {e}")
+        print(f"ERROR: Init failed: {e}")
         return
     
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Type /help for all commands")
-    print("="*60 + "\n")
+    print("=" * 60 + "\n")
     
     try:
         while True:
@@ -1019,43 +1108,41 @@ def main():
                 break
             elif user_input == "/help":
                 print("""
-╔══════════════════════════════════════════════════════════════╗
-║                    NEURO-SAVANT COMMANDS                     ║
-╠══════════════════════════════════════════════════════════════╣
-║  MEMORY                                                      ║
-║    /status                  Show memory stats + visualization║
-║    /clean                   Wipe all memory                  ║
-║    /visualize               Visual memory representation     ║
-║                                                              ║
-║  MODELS                                                      ║
-║    /model <name>            Switch LLM model                 ║
-║    /embed <name>            Switch embedding model (⚠️ wipes) ║
-║                                                              ║
-║  TOOLS                                                       ║
-║    /ingest <url>            Ingest GitHub repository         ║
-║    /behavior <cmd>          Set AI persona (list/set <name>) ║
-║    /example <cmd>           Load template (list/load <name>) ║
-║    /infinite <cmd>          Infinite mode (on/off)           ║
-║    /story <topic>           Generate story/world             ║
-║                                                              ║
-║  PERFORMANCE                                                 ║
-║    /perf                    Show performance metrics         ║
-║                                                              ║
-║  SYSTEM                                                      ║
-║    /quit                    Exit                             ║
-╚══════════════════════════════════════════════════════════════╝
+NEURO-SAVANT COMMANDS
+---------------------
+MEMORY
+  /status                Show memory stats and visualization
+  /clean                 Wipe all memory
+  /visualize             Visual memory representation
+
+MODELS
+  /model <name>          Switch LLM model
+  /embed <name>          Switch embedding model (wipes memory)
+
+TOOLS
+  /ingest <url>          Ingest GitHub repository
+  /behavior <cmd>        Set AI persona (list/set <name>)
+  /example <cmd>         Load template (list/load <name>)
+  /infinite <cmd>        Infinite mode (on/off/set_chunks)
+  /story <topic>         Generate story/world
+
+PERFORMANCE
+  /perf                  Show performance metrics
+
+SYSTEM
+  /quit                  Exit
 """)
             elif user_input == "/status":
                 agent.status()
             elif user_input == "/clean":
-                confirm = input("⚠️  Are you sure you want to WIPE ALL MEMORY? (y/n): ").lower()
+                confirm = input("WARN: Wipe all memory? (y/n): ").lower()
                 if confirm == 'y':
                     agent.clear_memory()
             elif user_input == "/perf":
                 if agent.perf_tracker:
                     print(agent.perf_tracker.display_stats())
                 else:
-                    print("⚠️  Performance tracker not available")
+                    print("WARN: Performance tracker not available")
             elif user_input == "/visualize":
                 if agent.visual:
                     try:
@@ -1070,24 +1157,24 @@ def main():
                                           for gid, meta in zip(group_data['ids'], group_data['metadatas'])}
                             print(agent.visual.group_distribution(group_sizes))
                     except Exception as e:
-                        print(f"⚠️  Visualization error: {e}")
+                        print(f"WARN: Visualization error: {e}")
                 else:
-                    print("⚠️  Visualization not available")
+                    print("WARN: Visualization not available")
             elif user_input.startswith("/model "):
                 new_model = user_input[7:].strip()
                 if new_model:
                     old_model = agent.config.model_name
                     agent.config.model_name = new_model
-                    print(f"✅ LLM model switched: {old_model} → {new_model}")
+                    print(f"OK: LLM model switched: {old_model} -> {new_model}")
                 else:
                     print(f"Current LLM model: {agent.config.model_name}")
             elif user_input.startswith("/embed "):
                 new_embed = user_input[7:].strip()
                 if new_embed:
-                    print(f"\n⚠️  WARNING: Changing embedding model requires WIPING ALL MEMORY!")
-                    print(f"   Embeddings from different models are incompatible.")
-                    print(f"   Current: {agent.config.embed_model} → New: {new_embed}\n")
-                    confirm = input("⚠️  Wipe memory and switch? (y/n): ").lower()
+                    print("\nWARN: Changing embedding model requires wiping all memory.")
+                    print("      Embeddings from different models are incompatible.")
+                    print(f"      Current: {agent.config.embed_model} -> New: {new_embed}\n")
+                    confirm = input("WARN: Wipe memory and switch? (y/n): ").lower()
                     if confirm == 'y':
                         # Wipe memory first
                         agent.clear_memory()
@@ -1095,7 +1182,7 @@ def main():
                         old_embed = agent.config.embed_model
                         agent.config.embed_model = new_embed
                         agent.encoder = OllamaEncoder(model=new_embed)
-                        print(f"✅ Embedding model switched: {old_embed} → {new_embed}")
+                        print(f"OK: Embedding model switched: {old_embed} -> {new_embed}")
                     else:
                         print("Cancelled. Keeping current embedding model.")
                 else:
@@ -1108,41 +1195,41 @@ def main():
                     url = user_input[8:].strip()
                     result = agent.tools['ingest'].execute(url=url)
                     if result['success']:
-                        print(f"✅ Ingested {result['files_ingested']} files from {result['repository']}")
+                        print(f"OK: Ingested {result['files_ingested']} files from {result['repository']}")
                     else:
-                        print(f"❌ Ingest failed: {result.get('error', 'Unknown error')}")
+                        print(f"ERROR: Ingest failed: {result.get('error', 'Unknown error')}")
                 else:
-                    print("⚠️  Ingest tool not available")
+                    print("WARN: Ingest tool not available")
             elif user_input.startswith("/behavior"):
                 if 'behavior' in agent.tools:
                     cmd = user_input[9:].strip()
                     print(agent.tools['behavior'].execute(cmd))
                 else:
-                    print("⚠️  Behavior tool not available")
+                    print("WARN: Behavior tool not available")
             elif user_input.startswith("/example"):
                 if 'example' in agent.tools:
                     cmd = user_input[8:].strip()
                     print(agent.tools['example'].execute(cmd))
                 else:
-                    print("⚠️  Example tool not available")
+                    print("WARN: Example tool not available")
             elif user_input.startswith("/infinite"):
                 if 'infinite' in agent.tools:
                     cmd = user_input[9:].strip()
                     print(agent.tools['infinite'].execute(cmd))
                 else:
-                    print("⚠️  Infinite tool not available")
+                    print("WARN: Infinite tool not available")
             elif user_input.startswith("/story "):
-                if HAS_TOOLS:
+                if HAS_STORYLINE_TOOL:
                     try:
                         topic = user_input[7:].strip()
                         story_agent = StorylineAgent(agent)
                         story_agent.execute_workflow(topic)
                     except Exception as e:
-                        print(f"⚠️  Story generation failed: {e}")
+                        print(f"WARN: Story generation failed: {e}")
                 else:
-                    print("⚠️  Story tool not available")
+                    print("WARN: Story tool not available")
             elif user_input.startswith("/"):
-                print(f"⚠️  Unknown command: {user_input}. Type /help for available commands.")
+                print(f"WARN: Unknown command: {user_input}. Type /help for available commands.")
             else:
                 agent.chat(user_input)
                 
