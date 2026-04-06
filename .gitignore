@@ -28,6 +28,6 @@ dream_log.jsonl
 # IDEs
 .idea/
 .vscode/
-
+data/
 # Config
 .neuro_savant_config
