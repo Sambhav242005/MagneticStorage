@@ -31,3 +31,6 @@ dream_log.jsonl
 data/
 # Config
 .neuro_savant_config
+
+# Archived reference
+attic/

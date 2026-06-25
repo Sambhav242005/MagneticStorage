@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`neuro_savant.py` is the main entrypoint and contains the Chroma-backed memory engine, CLI, and runtime wiring. `core/` holds shared runtime helpers such as agentic chat and performance tracking. `tools/` contains optional extensions; new tools should live here and subclass `tools.BaseTool` with a stable `name` and `command`. `tests/` contains the `unittest` suite. `benchmarks/` and `scripts/` are for performance runs and local verification helpers. Treat `old_architecture/` as reference-only, and avoid editing `benchmark_data_1m/` unless you are explicitly updating datasets.
+`neuro_savant.py` is the main entrypoint and contains the Chroma-backed memory engine, CLI, and runtime wiring. `core/` holds shared runtime helpers such as agentic chat and performance tracking. `tools/` contains optional extensions; new tools should live here and subclass `tools.BaseTool` with a stable `name` and `command`. `tests/` contains the `unittest` suite. `benchmarks/` and `scripts/` are for performance runs and local verification helpers. Keep `attic/` (formerly `old_architecture/`) as reference-only and do not edit its contents.
 
 ## Build, Test, and Development Commands
 - `pip install -r requirements.txt`: install runtime dependencies.
@@ -21,3 +21,16 @@ Current history uses short, informal subjects such as `update md files` and `add
 
 ## Security & Configuration Tips
 The project expects local services such as Ollama and writes state under the configured Chroma database path. Do not commit local virtualenvs, generated memory stores, or secrets. Keep external URLs and repo ingestion inputs explicit and validated.
+
+## Portfolio Cover Asset
+
+Maintain a project-specific SVG at `docs/portfolio-cover.svg`.
+
+Rules:
+- The SVG must be hand-authored/static, not a raster screenshot, AI-generated image, base64 image, or external asset.
+- Use `width="1200"`, `height="760"`, `viewBox="0 0 1200 760"`.
+- It should visually summarize the real current project: architecture, workflow, UI, model pipeline, or system behavior.
+- Update this SVG whenever major project functionality, architecture, or branding changes.
+- Keep text minimal and readable at thumbnail size.
+- No fake product names, unrelated placeholder visuals, or generic charts.
+- The portfolio repo may copy this file into `public/project-assets` as the local backup/rendering copy.

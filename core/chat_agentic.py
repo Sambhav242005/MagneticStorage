@@ -6,7 +6,7 @@ import requests
 import time
 
 
-def chat_agentic(agent, user_input: str, MEMORY_TOOLS: list) -> str:
+def chat_agentic(agent, user_input: str, MEMORY_TOOLS: list, base_url: str = "http://localhost:11434") -> str:
     """
     Agentic chat where the LLM decides when to search memory.
 
@@ -29,7 +29,7 @@ def chat_agentic(agent, user_input: str, MEMORY_TOOLS: list) -> str:
     try:
         while tool_calls_made < max_tool_calls:
             response = requests.post(
-                "http://localhost:11434/api/chat",
+                f"{base_url}/api/chat",
                 json={
                     "model": agent.config.model_name,
                     "messages": messages,
@@ -62,7 +62,7 @@ def chat_agentic(agent, user_input: str, MEMORY_TOOLS: list) -> str:
         if tool_calls_made >= max_tool_calls:
             print("\nWARN: Max tool calls reached")
             response = requests.post(
-                "http://localhost:11434/api/chat",
+                f"{base_url}/api/chat",
                 json={
                     "model": agent.config.model_name,
                     "messages": messages,

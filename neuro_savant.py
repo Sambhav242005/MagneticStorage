@@ -49,12 +49,7 @@ HAS_INFINITE_TOOL = False
 HAS_STORYLINE_TOOL = False
 HAS_INGEST_TOOL = False
 
-# Import agentic chat
-try:
-    from core.chat_agentic import chat_agentic
-    HAS_AGENTIC_CHAT = True
-except ImportError:
-    HAS_AGENTIC_CHAT = False
+
 
 try:
     from tools.agent_behavior import AgentBehaviorTool
@@ -101,13 +96,32 @@ except ImportError:
 @dataclass
 class Config:
     db_path: str = "./neuro_savant_memory"
-    model_name: str = "deepseek-r1:1.5b"  # Default LLM model
-    embed_model: str = "nomic-embed-text"  # Embedding model
-    use_agentic: bool = True           # Enable agentic function calling (LLM controls search)
-    similarity_threshold: float = 0.4  # Threshold to join a group (cosine distance)
-    group_top_k: int = 3               # Number of groups to retrieve (Layer 0)
-    cell_top_k: int = 200              # Number of cells to retrieve per group (Increased for recall)
-    merge_threshold: float = 0.85      # Threshold for merging groups (Sleep Mode)
+    model_name: str = "deepseek-r1:1.5b"
+    embed_model: str = "nomic-embed-text"
+    ollama_host: str = "localhost"
+    ollama_port: int = 11434
+    use_agentic: bool = True
+    similarity_threshold: float = 0.4
+    merge_threshold: float = 0.85
+    group_top_k: int = 3
+    cell_top_k: int = 200
+    entity_boost: float = 0.5
+    filename_boost: float = 2.0
+    file_meta_boost: float = 0.3
+
+# =============================================================================
+# RETRY WRAPPER
+# =============================================================================
+
+def _db_retry(fn, max_retries: int = 2, backoff: float = 0.5):
+    """Retry a ChromaDB call on failure with exponential backoff."""
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(backoff * (attempt + 1))
 
 # =============================================================================
 # AGENTIC TOOLS DEFINITION
@@ -203,8 +217,9 @@ class OllamaEncoder:
     Uses Ollama's embedding API with nomic-embed-text model.
     Produces 768-dimensional embeddings.
     """
-    def __init__(self, model: str = "nomic-embed-text"):
+    def __init__(self, model: str = "nomic-embed-text", base_url: str = "http://localhost:11434"):
         self.model = model
+        self.base_url = base_url
         self.dimension = 768  # nomic-embed-text produces 768-dim vectors
         print(f"INFO: Using Ollama encoder with model: {model}")
         
@@ -213,7 +228,7 @@ class OllamaEncoder:
         for text in texts:
             try:
                 response = requests.post(
-                    "http://localhost:11434/api/embeddings",
+                    f"{self.base_url}/api/embeddings",
                     json={"model": self.model, "prompt": text}
                 )
                 if response.status_code == 200:
@@ -267,11 +282,10 @@ class NeuroSavant:
         
         # Load Encoder - Try Ollama first, then SentenceTransformer, then Mock
         try:
-            # Test if Ollama is available
-            test_response = requests.get("http://localhost:11434/api/tags", timeout=2)
+            test_response = requests.get(f"{self.ollama_api_base}/api/tags", timeout=2)
             if test_response.status_code == 200:
-                self.encoder = OllamaEncoder(model=config.embed_model)
-                print(f"INFO: Using Ollama embeddings: {config.embed_model}")
+                self.encoder = OllamaEncoder(model=config.embed_model, base_url=self.ollama_api_base)
+                print(f"INFO: Using Ollama embeddings: {config.embed_model} @ {self.ollama_api_base}")
             else:
                 raise Exception("Ollama not responding")
         except:
@@ -314,8 +328,9 @@ class NeuroSavant:
         self.groups = self.client.get_or_create_collection("ns_groups", embedding_function=noop_ef)
         self.entity_index = self.client.get_or_create_collection("ns_entity_index", embedding_function=noop_ef)
         
-        # In-memory cache for group updates
-        self.group_cache = {} 
+        # In-memory cache for group updates (thread-safe)
+        self.group_cache = {}
+        self._cache_lock = threading.Lock()
         self._load_groups()
         
         # Initialize performance tracker
@@ -365,6 +380,19 @@ class NeuroSavant:
     def model_name(self, value: str):
         self.config.model_name = value
 
+    @property
+    def ollama_api_base(self) -> str:
+        return f"http://{self.config.ollama_host}:{self.config.ollama_port}"
+
+    def _db_retry(self, fn, max_retries=2, backoff=0.5):
+        for attempt in range(max_retries):
+            try:
+                return fn()
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(backoff * (attempt + 1))
+
     def _cell_id(self, text: str) -> str:
         return f"cell_{hashlib.md5(text.encode()).hexdigest()}"
 
@@ -387,34 +415,36 @@ class NeuroSavant:
 
     def _load_groups(self):
         try:
-            existing = self.groups.get(include=['embeddings', 'metadatas'])
+            existing = self._db_retry(lambda: self.groups.get(include=['embeddings', 'metadatas']))
             if existing['ids']:
-                for i, gid in enumerate(existing['ids']):
-                    emb = existing['embeddings'][i]
-                    meta = existing['metadatas'][i]
-                    self.group_cache[gid] = {
-                        'centroid': np.array(emb),
-                        'count': meta.get('count', 1)
-                    }
+                with self._cache_lock:
+                    for i, gid in enumerate(existing['ids']):
+                        emb = existing['embeddings'][i]
+                        meta = existing['metadatas'][i]
+                        self.group_cache[gid] = {
+                            'centroid': np.array(emb),
+                            'count': meta.get('count', 1)
+                        }
         except:
             pass
 
-    def ingest(self, text: str):
+    def ingest(self, text: str) -> bool:
         cell_id = self._cell_id(text)
         if cell_id in self._get_existing_ids(self.cells, [cell_id]):
             return False
 
         vector = self.encoder.encode([text])[0]
 
-        best_group_id = None
+        best_group_id: Optional[str] = None
         min_dist = float('inf')
 
-        if self.group_cache:
-            for gid, data in self.group_cache.items():
-                dist = 1 - np.dot(vector, data['centroid'])
-                if dist < min_dist:
-                    min_dist = dist
-                    best_group_id = gid
+        with self._cache_lock:
+            if self.group_cache:
+                for gid, data in self.group_cache.items():
+                    dist = 1 - np.dot(vector, data['centroid'])
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_group_id = gid
 
         if best_group_id and min_dist < self.config.similarity_threshold:
             self._update_group(best_group_id, vector)
@@ -444,7 +474,7 @@ class NeuroSavant:
 
         return True
 
-    def batch_ingest(self, texts: List[str]):
+    def batch_ingest(self, texts: List[str]) -> None:
         """
         Optimized batch ingestion.
         """
@@ -496,46 +526,39 @@ class NeuroSavant:
             best_group_id = None
             min_dist = float('inf')
             
-            if self.group_cache:
-                gids = list(self.group_cache.keys())
-                centroids = np.array([self.group_cache[gid]['centroid'] for gid in gids])
-                
-                # Vector-matrix multiplication for fast similarity (N, D) x (D,) -> (N,)
-                similarities = np.dot(centroids, vector)
-                
-                best_idx = np.argmax(similarities)
-                max_sim = similarities[best_idx]
-                min_dist = 1.0 - max_sim
-                
-                if min_dist < self.config.similarity_threshold:
-                    best_group_id = gids[best_idx]
-            
-            # Decision
-            # Decision
-            if best_group_id and min_dist < self.config.similarity_threshold:
-                # Join
-                # self._update_group(best_group_id, vector) # OLD: called DB upsert
-                
-                # Update Cache & Buffer for later Batch Upsert
-                data = self.group_cache[best_group_id]
-                n = data['count']
-                old_centroid = data['centroid']
-                new_centroid = (old_centroid * n + vector) / (n + 1)
-                new_centroid = self._normalize_vector(new_centroid)
-                
-                data['centroid'] = new_centroid
-                data['count'] = n + 1
-                
-                group_upserts[best_group_id] = {'centroid': new_centroid, 'count': n + 1}
-                group_id = best_group_id
-            else:
-                # Create
-                group_id = f"group_{int(time.time()*1000)}_{i}_{hash(text)%1000}"
-                normalized = self._normalize_vector(vector)
-                
-                # Update Cache & Buffer for later Batch Add/Upsert
-                self.group_cache[group_id] = {'centroid': normalized, 'count': 1}
-                group_upserts[group_id] = {'centroid': normalized, 'count': 1}
+            with self._cache_lock:
+                if self.group_cache:
+                    gids = list(self.group_cache.keys())
+                    centroids = np.array([self.group_cache[gid]['centroid'] for gid in gids])
+
+                    similarities = np.dot(centroids, vector)
+
+                    best_idx = np.argmax(similarities)
+                    max_sim = similarities[best_idx]
+                    min_dist = 1.0 - max_sim
+
+                    if min_dist < self.config.similarity_threshold:
+                        best_group_id = gids[best_idx]
+
+            with self._cache_lock:
+                if best_group_id and min_dist < self.config.similarity_threshold:
+                    data = self.group_cache[best_group_id]
+                    n = data['count']
+                    old_centroid = data['centroid']
+                    new_centroid = (old_centroid * n + vector) / (n + 1)
+                    new_centroid = self._normalize_vector(new_centroid)
+
+                    data['centroid'] = new_centroid
+                    data['count'] = n + 1
+
+                    group_upserts[best_group_id] = {'centroid': new_centroid, 'count': n + 1}
+                    group_id = best_group_id
+                else:
+                    group_id = f"group_{int(time.time()*1000)}_{i}_{hash(text)%1000}"
+                    normalized = self._normalize_vector(vector)
+
+                    self.group_cache[group_id] = {'centroid': normalized, 'count': 1}
+                    group_upserts[group_id] = {'centroid': normalized, 'count': 1}
                 group_id = group_id
                 
             # Cell Data
@@ -553,8 +576,6 @@ class NeuroSavant:
                 entity_metas.append({"group_id": group_id, "entity": entity})
                 
         # 3. Bulk Write
-        # Cells
-        self.cells.upsert(
         self.cells.upsert(
             ids=cell_ids,
             documents=cell_docs,
@@ -594,29 +615,31 @@ class NeuroSavant:
 
     def _create_group(self, group_id: str, vector: np.ndarray):
         normalized = self._normalize_vector(vector)
-        self.group_cache[group_id] = {'centroid': normalized, 'count': 1}
-        self.groups.add(
+        with self._cache_lock:
+            self.group_cache[group_id] = {'centroid': normalized, 'count': 1}
+        self._db_retry(lambda: self.groups.add(
             ids=[group_id],
             embeddings=[normalized.tolist()],
             metadatas=[{"count": 1}]
-        )
+        ))
 
     def _update_group(self, group_id: str, new_vector: np.ndarray):
-        data = self.group_cache[group_id]
-        n = data['count']
-        old_centroid = data['centroid']
-        
-        new_centroid = (old_centroid * n + new_vector) / (n + 1)
-        new_centroid = self._normalize_vector(new_centroid)
-        
-        data['centroid'] = new_centroid
-        data['count'] = n + 1
-        
-        self.groups.upsert(
+        with self._cache_lock:
+            data = self.group_cache[group_id]
+            n = data['count']
+            old_centroid = data['centroid']
+
+            new_centroid = (old_centroid * n + new_vector) / (n + 1)
+            new_centroid = self._normalize_vector(new_centroid)
+
+            data['centroid'] = new_centroid
+            data['count'] = n + 1
+
+        self._db_retry(lambda: self.groups.upsert(
             ids=[group_id],
             embeddings=[new_centroid.tolist()],
             metadatas=[{"count": n + 1}]
-        )
+        ))
 
     def query(self, query_text: str) -> str:
         query_start = time.perf_counter()
@@ -710,26 +733,21 @@ class NeuroSavant:
             doc = cand['doc']
             doc_lower = doc.lower()
             
-            # Boost for entity matches
             for entity in entities:
                 if entity.lower() in doc_lower:
-                    cand['score'] += 0.5
-            
-            # STRONG boost for filename matches in query
-            # Extract potential filenames from query
+                    cand['score'] += self.config.entity_boost
+
             query_words = query_text.split()
             for word in query_words:
-                # Check if word looks like a filename
                 if '.' in word or '/' in word:
                     if word.lower() in doc_lower:
-                        cand['score'] += 2.0  # Strong boost for filename match
+                        cand['score'] += self.config.filename_boost
                         print(f"DEBUG: Filename boost for '{word}' in doc")
-            
-            # Boost for file metadata header match
+
             if '[File:' in doc:
                 for word in query_words:
                     if word.lower() in doc_lower and len(word) > 3:
-                        cand['score'] += 0.3  # Moderate boost for any query word in file
+                        cand['score'] += self.config.file_meta_boost
                     
         # Sort and Return Top 3
         candidates.sort(key=lambda x: x['score'], reverse=True)
@@ -737,7 +755,7 @@ class NeuroSavant:
         final_docs = [c['doc'] for c in candidates[:3]]
         return "\n---\n".join(final_docs)
 
-    def consolidate_memory(self):
+    def consolidate_memory(self) -> None:
         """
         Sleep Mode: Merges similar groups to compact the index.
         Uses greedy vectorized consolidation to avoid O(N^2) memory explosion.
@@ -786,37 +804,27 @@ class NeuroSavant:
                     
                     print(f"Merging Group {source_id} -> {target_id} (Sim: {sims[j]:.3f})")
                     
-                    # Update Cells
-                    source_cells = self.cells.get(where={"group_id": source_id})
+                    source_cells = self._db_retry(lambda: self.cells.get(where={"group_id": source_id}))
                     if source_cells['ids']:
-                        new_metas = []
-                        for m in source_cells['metadatas']:
-                            m['group_id'] = target_id
-                            new_metas.append(m)
-                        self.cells.update(ids=source_cells['ids'], metadatas=new_metas)
+                        new_metas = [dict(m, group_id=target_id) for m in source_cells['metadatas']]
+                        self._db_retry(lambda: self.cells.update(ids=source_cells['ids'], metadatas=new_metas))
 
-                    # Update Entity Index
-                    source_entities = self.entity_index.get(where={"group_id": source_id})
+                    source_entities = self._db_retry(lambda: self.entity_index.get(where={"group_id": source_id}))
                     if source_entities['ids']:
-                        new_ent_metas = []
-                        for m in source_entities['metadatas']:
-                            m['group_id'] = target_id
-                            new_ent_metas.append(m)
-                        self.entity_index.update(ids=source_entities['ids'], metadatas=new_ent_metas)
-                    
-                    # Update Target Centroid
+                        new_ent_metas = [dict(m, group_id=target_id) for m in source_entities['metadatas']]
+                        self._db_retry(lambda: self.entity_index.update(ids=source_entities['ids'], metadatas=new_ent_metas))
+
                     vec_j = embeddings[j]
                     new_centroid = (vec_i * count_i + vec_j * count_j) / (count_i + count_j)
                     new_centroid = self._normalize_vector(new_centroid)
-                    
-                    self.groups.update(
+
+                    self._db_retry(lambda: self.groups.update(
                         ids=[target_id],
                         embeddings=[new_centroid.tolist()],
                         metadatas=[{"count": count_i + count_j}]
-                    )
-                    
-                    # Delete Source Group
-                    self.groups.delete(ids=[source_id])
+                    ))
+
+                    self._db_retry(lambda: self.groups.delete(ids=[source_id]))
                     merged_indices.add(j)
                     
                     merged_indices.add(j)
@@ -830,8 +838,8 @@ class NeuroSavant:
                     metadatas[i]['count'] = count_i
                     
         print(f"Consolidation Complete. Merged {merges} groups.")
-        # Reload cache
-        self.group_cache = {}
+        with self._cache_lock:
+            self.group_cache = {}
         self._load_groups()
 
     def _run_conflict_analysis_agent(self, cell_contents: List[str]) -> Optional[str]:
@@ -857,7 +865,7 @@ Statements:
 
         try:
             response = requests.post(
-                "http://localhost:11434/api/generate",
+                f"{self.ollama_api_base}/api/generate",
                 json={
                     "model": self.config.model_name,
                     "prompt": full_prompt,
@@ -873,7 +881,7 @@ Statements:
         
         return None
 
-    def agentic_consolidation(self):
+    def agentic_consolidation(self) -> None:
         """
         Agentic Sleep Mode: Analyzes groups for semantic conflicts.
         """
@@ -955,110 +963,158 @@ Statements:
             if self.perf_tracker:
                 self.perf_tracker.record_tool_usage(tool_name, success)
     
+    def _streaming_chat(self, messages: list) -> str:
+        """Non-agentic streaming chat call."""
+        print("Assistant: ", end="", flush=True)
+        response = requests.post(
+            f"{self.ollama_api_base}/api/chat",
+            json={
+                "model": self.config.model_name,
+                "messages": messages,
+                "stream": True
+            },
+            stream=True
+        )
+        if response.status_code != 200:
+            print(f"\nWARN: Ollama API error: {response.text}")
+            return "Error connecting to Ollama."
+
+        full_reply = ""
+        for line in response.iter_lines():
+            if line:
+                decoded = line.decode('utf-8')
+                try:
+                    chunk = json.loads(decoded)
+                    content = chunk.get('message', {}).get('content', '')
+                    if content:
+                        print(content, end='', flush=True)
+                        full_reply += content
+                except:
+                    pass
+        print()
+        return full_reply
+
+    def _agentic_chat(self, messages: list) -> str:
+        """Agentic chat with function calling loop. Returns final reply."""
+        full_reply = ""
+        tool_calls_made = 0
+        max_tool_calls = 5
+
+        truncated_context = messages[0]["content"][:3000]
+
+        while tool_calls_made < max_tool_calls:
+            response = requests.post(
+                f"{self.ollama_api_base}/api/chat",
+                json={
+                    "model": self.config.model_name,
+                    "messages": messages,
+                    "tools": MEMORY_TOOLS,
+                    "stream": False,
+                },
+            )
+            if response.status_code != 200:
+                print(f"\nWARN: Ollama API error: {response.text}")
+                return "Error connecting to Ollama."
+
+            result = response.json()
+            message = result.get("message", {})
+            tool_calls = message.get("tool_calls", [])
+
+            if tool_calls:
+                messages.append(message)
+                for tool_call in tool_calls:
+                    tool_name = tool_call["function"]["name"]
+                    tool_args = tool_call["function"]["arguments"]
+                    tool_result = self._execute_tool_call(tool_name, tool_args)
+                    messages.append({"role": "tool", "content": tool_result})
+                    tool_calls_made += 1
+            else:
+                full_reply = message.get("content", "")
+                break
+
+        if tool_calls_made >= max_tool_calls:
+            print("\nWARN: Max tool calls reached, getting final response...")
+            response = requests.post(
+                f"{self.ollama_api_base}/api/chat",
+                json={
+                    "model": self.config.model_name,
+                    "messages": messages,
+                    "stream": False,
+                },
+            )
+            full_reply = response.json().get("message", {}).get("content", "")
+
+        if full_reply:
+            print(f"Assistant: {full_reply}")
+
+        return full_reply
+
     def chat(self, user_input: str) -> str:
         """
         Interactive chat with agentic memory search.
         """
         total_start = time.perf_counter()
         print(f"Thinking... (Model: {self.config.model_name})")
-        
-        # 1. Retrieve Context
+
         query_start = time.perf_counter()
         context = self.query(user_input)
         query_time = (time.perf_counter() - query_start) * 1000
-        
-        # 2. Generate Response
+
+        full_reply = ""
+
         if not HAS_OLLAMA:
             print("ERROR: Ollama not found. Cannot generate response.")
             print(f"Context found:\n{context}")
             return "Ollama not installed."
-            
-        full_reply = ""
+
         ollama_start = time.perf_counter()
         try:
-            # 1.5 Infinite Mode Delegation
             if 'infinite' in self.tools and self.tools['infinite'].active:
-                print(f"   ∞ Delegating to Infinite Loop Tool...")
-                # We use the raw user input as the prompt for the sequence
+                print(f"   Delegating to Infinite Loop Tool...")
                 full_text, chunks = self.tools['infinite'].generate_sequence(
                     model_name=self.config.model_name,
-                    system_prompt=f"You are a helpful AI assistant with access to a vast memory database.",
+                    system_prompt="You are a helpful AI assistant with access to a vast memory database.",
                     user_prompt=user_input
                 )
-                # The tool handles its own printing/streaming usually, but we return the full text
-                # We also need to manually ingest the result here if the tool didn't do it per-chunk?
-                # The plan says the tool will do per-chunk ingest.
-                # So we just return the full text for the chat history/display.
-                
-                # Record performance
                 total_time = (time.perf_counter() - total_start) * 1000
-                print(f"\n⏱️  Infinite Generation Complete | Total: {total_time:.0f}ms")
+                print(f"  Infinite Generation Complete | Total: {total_time:.0f}ms")
                 return full_text
 
             messages = [
-                {"role": "system", "content": f"You are a helpful AI assistants with advanced memory.\n\nRELEVANT MEMORY CONTEXT:\n{context[:4000]}"},
+                {"role": "system", "content": f"You are a helpful AI assistant with advanced memory.\n\nRELEVANT MEMORY CONTEXT:\n{context[:4000]}"},
                 {"role": "user", "content": user_input}
             ]
-            
-            print("Assistant: ", end="", flush=True)
-            
-            # Use direct HTTP request to avoid Pydantic V2 conflict
-            response = requests.post(
-                "http://localhost:11434/api/chat",
-                json={
-                    "model": self.config.model_name,
-                    "messages": messages,
-                    "stream": True
-                },
-                stream=True
-            )
-            
-            if response.status_code != 200:
-                print(f"\nWARN: Ollama API error: {response.text}")
-                return "Error connecting to Ollama."
 
-            for line in response.iter_lines():
-                if line:
-                    decoded = line.decode('utf-8')
-                    try:
-                        chunk = json.loads(decoded)
-                        content = chunk.get('message', {}).get('content', '')
-                        if content:
-                            print(content, end='', flush=True)
-                            full_reply += content
-                    except:
-                        pass
-            print()
-            
+            if self.config.use_agentic:
+                full_reply = self._agentic_chat(messages)
+            else:
+                full_reply = self._streaming_chat(messages)
+
         except Exception as e:
             print(f"\nWARN: Generation error: {e}")
             full_reply = "I apologize, but I encountered an error communicating with the model."
-        
+
         ollama_time = (time.perf_counter() - ollama_start) * 1000
-            
-        # 3. Auto-Ingest Interaction (Short-term memory)
-        # We ingest the interaction so it becomes part of memory
+
         ingest_start = time.perf_counter()
         interaction = f"User: {user_input}\nAssistant: {full_reply}"
         self.ingest(interaction)
         ingest_time = (time.perf_counter() - ingest_start) * 1000
-        
+
         total_time = (time.perf_counter() - total_start) * 1000
-        
-        # Show timing breakdown
+
         print(
             f"\nTiming: Query {query_time:.0f}ms | Ollama {ollama_time:.0f}ms | "
             f"Ingest {ingest_time:.0f}ms | Total {total_time:.0f}ms"
         )
-        
-        # Record performance if tracker available
+
         if self.perf_tracker:
             self.perf_tracker.metrics.query_times.append(query_time)
             self.perf_tracker.metrics.total_queries += 1
-        
+
         return full_reply
 
-    def status(self):
+    def status(self) -> None:
         """Display system status"""
         try:
             cell_count = self.cells.count()
@@ -1145,6 +1201,41 @@ def parse_args():
         default="./neuro_savant_memory",
         help="Path to memory database (default: ./neuro_savant_memory)"
     )
+    parser.add_argument(
+        "--ollama-host",
+        type=str,
+        default=os.environ.get("OLLAMA_HOST", "localhost"),
+        help="Ollama server host (default: localhost, env: OLLAMA_HOST)"
+    )
+    parser.add_argument(
+        "--ollama-port",
+        type=int,
+        default=int(os.environ.get("OLLAMA_PORT", "11434")),
+        help="Ollama server port (default: 11434, env: OLLAMA_PORT)"
+    )
+    parser.add_argument(
+        "--merge-threshold",
+        type=float,
+        default=0.85,
+        help="Cosine similarity threshold for group merging during sleep mode (default: 0.85)"
+    )
+    parser.add_argument(
+        "--group-top-k",
+        type=int,
+        default=3,
+        help="Number of groups to retrieve during query (default: 3)"
+    )
+    parser.add_argument(
+        "--cell-top-k",
+        type=int,
+        default=200,
+        help="Number of cells per group during query (default: 200)"
+    )
+    parser.add_argument(
+        "--disable-agentic",
+        action="store_true",
+        help="Disable agentic function-calling mode"
+    )
     return parser.parse_args()
 
 def main():
@@ -1159,7 +1250,17 @@ def main():
     print(f"Database: {args.db}\n")
     
     try:
-        config = Config(db_path=args.db, model_name=args.model, embed_model=args.embed)
+        config = Config(
+            db_path=args.db,
+            model_name=args.model,
+            embed_model=args.embed,
+            ollama_host=args.ollama_host,
+            ollama_port=args.ollama_port,
+            merge_threshold=args.merge_threshold,
+            group_top_k=args.group_top_k,
+            cell_top_k=args.cell_top_k,
+            use_agentic=not args.disable_agentic,
+        )
         agent = NeuroSavant(config)
     except Exception as e:
         print(f"ERROR: Init failed: {e}")
@@ -1297,7 +1398,6 @@ SYSTEM
                 else:
                     print("WARN: Infinite tool not available")
             elif user_input.startswith("/story "):
-                if HAS_STORYLINE_TOOL:
                 if HAS_STORYLINE_TOOL:
                     try:
                         topic = user_input[7:].strip()
