@@ -1,209 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1000" viewBox="0 0 800 1000">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#0b0d17"/>
       <stop offset="100%" stop-color="#141729"/>
     </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#7c5cfc"/>
-      <stop offset="100%" stop-color="#a78bfa"/>
-    </linearGradient>
-    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#14b8a6"/>
-      <stop offset="100%" stop-color="#5eead4"/>
-    </linearGradient>
-    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#f59e0b"/>
-      <stop offset="100%" stop-color="#fbbf24"/>
-    </linearGradient>
-    <linearGradient id="pink" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#ec4899"/>
-      <stop offset="100%" stop-color="#f472b6"/>
-    </linearGradient>
-    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#3b82f6"/>
-      <stop offset="100%" stop-color="#60a5fa"/>
-    </linearGradient>
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="3" result="blur"/>
-      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-    <filter id="shadow">
-      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.4"/>
-    </filter>
-    <marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#888"/>
-    </marker>
-    <marker id="arrowAccent" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#7c5cfc"/>
-    </marker>
   </defs>
 
-  <!-- Background -->
-  <rect width="1200" height="760" fill="url(#bg)"/>
+  <rect width="800" height="1000" fill="url(#bg)"/>
 
-  <!-- Grid dots -->
-  <g fill="#1e203a" opacity="0.5">
-    <circle cx="40" cy="40" r="1.5"/><circle cx="120" cy="40" r="1.5"/><circle cx="200" cy="40" r="1.5"/>
-    <circle cx="280" cy="40" r="1.5"/><circle cx="360" cy="40" r="1.5"/><circle cx="440" cy="40" r="1.5"/>
-    <circle cx="520" cy="40" r="1.5"/><circle cx="600" cy="40" r="1.5"/><circle cx="680" cy="40" r="1.5"/>
-    <circle cx="760" cy="40" r="1.5"/><circle cx="840" cy="40" r="1.5"/><circle cx="920" cy="40" r="1.5"/>
-    <circle cx="1000" cy="40" r="1.5"/><circle cx="1080" cy="40" r="1.5"/><circle cx="1160" cy="40" r="1.5"/>
-    <circle cx="40" cy="120" r="1.5"/><circle cx="600" cy="120" r="1.5"/><circle cx="1160" cy="120" r="1.5"/>
-    <circle cx="40" cy="200" r="1.5"/><circle cx="600" cy="200" r="1.5"/><circle cx="1160" cy="200" r="1.5"/>
-    <circle cx="40" cy="280" r="1.5"/><circle cx="600" cy="280" r="1.5"/><circle cx="1160" cy="280" r="1.5"/>
-    <circle cx="40" cy="360" r="1.5"/><circle cx="600" cy="360" r="1.5"/><circle cx="1160" cy="360" r="1.5"/>
-    <circle cx="40" cy="440" r="1.5"/><circle cx="600" cy="440" r="1.5"/><circle cx="1160" cy="440" r="1.5"/>
-    <circle cx="40" cy="520" r="1.5"/><circle cx="600" cy="520" r="1.5"/><circle cx="1160" cy="520" r="1.5"/>
-    <circle cx="40" cy="600" r="1.5"/><circle cx="600" cy="600" r="1.5"/><circle cx="1160" cy="600" r="1.5"/>
-    <circle cx="40" cy="680" r="1.5"/><circle cx="600" cy="680" r="1.5"/><circle cx="1160" cy="680" r="1.5"/>
-    <circle cx="40" cy="740" r="1.5"/><circle cx="600" cy="740" r="1.5"/><circle cx="1160" cy="740" r="1.5"/>
-  </g>
+  <text x="400" y="70" font-family="monospace" font-size="42" font-weight="bold" fill="#e8e8e8" text-anchor="middle">NeuroSavant 2.0</text>
+  <text x="400" y="105" font-family="monospace" font-size="18" fill="#aaaaaa" text-anchor="middle">Hierarchical Memory System — Beyond Flat RAG</text>
 
-  <!-- Title bar -->
-  <rect x="40" y="28" width="1120" height="52" rx="8" fill="#1a1d2e" filter="url(#shadow)"/>
-  <text x="80" y="62" font-family="'Courier New', monospace" font-size="22" font-weight="bold" fill="#e8e8e8" letter-spacing="1">NeuroSavant 2.0</text>
-  <text x="340" y="62" font-family="'Courier New', monospace" font-size="14" fill="#888">Hierarchical Memory System — Beyond Flat RAG</text>
+  <rect x="60" y="150" width="680" height="150" rx="12" fill="#1a1d2e" stroke="#a78bfa" stroke-width="2"/>
+  <text x="80" y="195" font-family="monospace" font-size="24" font-weight="bold" fill="#a78bfa">CLI / AGENT</text>
+  <text x="80" y="230" font-family="monospace" font-size="16" fill="#ffffff">Commands + Agentic Chat</text>
+  <text x="80" y="270" font-family="monospace" font-size="14" fill="#bbbbbb">/status · /story · /sleep · /infinite · LLM function calling</text>
 
-  <!-- ===== COLUMN 1: CLI & AGENT ===== -->
-  <rect x="40" y="104" width="320" height="60" rx="8" fill="#1a1d2e" filter="url(#shadow)"/>
-  <text x="60" y="128" font-family="'Courier New', monospace" font-size="13" font-weight="bold" fill="#a78bfa">CLI / AGENT LAYER</text>
-  <text x="60" y="150" font-family="'Courier New', monospace" font-size="11" fill="#666">Interactive REPL · command dispatch · agentic chat</text>
+  <rect x="60" y="330" width="680" height="150" rx="12" fill="#1a1d2e" stroke="#5eead4" stroke-width="2"/>
+  <text x="80" y="375" font-family="monospace" font-size="24" font-weight="bold" fill="#5eead4">MEMORY ENGINE</text>
+  <text x="80" y="410" font-family="monospace" font-size="16" fill="#ffffff">ChromaDB Hierarchical Storage</text>
+  <text x="80" y="450" font-family="monospace" font-size="14" fill="#bbbbbb">Groups → Cells → Entities · Online clustering · Sleep merging</text>
 
-  <!-- CLI sub-blocks -->
-  <rect x="40" y="180" width="150" height="44" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="55" y="200" font-family="'Courier New', monospace" font-size="11" fill="#ccc">/status  /sleep</text>
-  <text x="55" y="216" font-family="'Courier New', monospace" font-size="11" fill="#ccc">/model  /ingest</text>
+  <rect x="60" y="510" width="680" height="150" rx="12" fill="#1a1d2e" stroke="#f472b6" stroke-width="2"/>
+  <text x="80" y="555" font-family="monospace" font-size="24" font-weight="bold" fill="#f472b6">OLLAMA</text>
+  <text x="80" y="590" font-family="monospace" font-size="16" fill="#ffffff">Local LLM + Embeddings</text>
+  <text x="80" y="630" font-family="monospace" font-size="14" fill="#bbbbbb">DeepSeek-R1 · nomic-embed · 768-dim vectors</text>
 
-  <rect x="210" y="180" width="150" height="44" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="225" y="200" font-family="'Courier New', monospace" font-size="11" fill="#ccc">/story  /infinite</text>
-  <text x="225" y="216" font-family="'Courier New', monospace" font-size="11" fill="#ccc">/behavior  /clean</text>
+  <rect x="60" y="690" width="680" height="100" rx="8" fill="#1a1d2e" stroke="#a78bfa" stroke-width="1"/>
+  <text x="80" y="730" font-family="monospace" font-size="18" font-weight="bold" fill="#a78bfa">TOOLS</text>
+  <text x="80" y="765" font-family="monospace" font-size="14" fill="#bbbbbb">Storyline · GitHub Ingest · Behavior · Infinite Loop · Perf Tracker</text>
 
-  <!-- Arrow from CLI to Memory Engine -->
-  <line x1="200" y1="224" x2="200" y2="260" stroke="#888" stroke-width="2" marker-end="url(#arrow)"/>
-
-  <!-- Agentic Chat box -->
-  <rect x="40" y="268" width="320" height="52" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="60" y="290" font-family="'Courier New', monospace" font-size="11" font-weight="bold" fill="#f472b6">Agentic Chat (function calling)</text>
-  <text x="60" y="310" font-family="'Courier New', monospace" font-size="10" fill="#777">LLM calls search_memory / add_to_memory tools</text>
-
-  <!-- ===== COLUMN 2: MEMORY ENGINE ===== -->
-  <rect x="420" y="104" width="420" height="60" rx="8" fill="#1a1d2e" filter="url(#shadow)"/>
-  <text x="440" y="128" font-family="'Courier New', monospace" font-size="13" font-weight="bold" fill="#5eead4">MEMORY ENGINE (ChromaDB)</text>
-  <text x="440" y="150" font-family="'Courier New', monospace" font-size="11" fill="#666">Hierarchical cell-based storage · online clustering</text>
-
-  <!-- Groups + Cells hierarchy -->
-  <rect x="420" y="180" width="200" height="80" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="440" y="202" font-family="'Courier New', monospace" font-size="12" font-weight="bold" fill="#5eead4">Groups (ns_groups)</text>
-  <text x="440" y="222" font-family="'Courier New', monospace" font-size="10" fill="#999">Concept clusters · centroids</text>
-  <text x="440" y="242" font-family="'Courier New', monospace" font-size="10" fill="#777">Online clustering · merge via sleep</text>
-
-  <line x1="520" y1="260" x2="520" y2="280" stroke="#888" stroke-width="2" marker-end="url(#arrow)"/>
-
-  <rect x="420" y="288" width="200" height="80" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="440" y="310" font-family="'Courier New', monospace" font-size="12" font-weight="bold" fill="#5eead4">Cells (ns_cells)</text>
-  <text x="440" y="330" font-family="'Courier New', monospace" font-size="10" fill="#999">Individual memories · embeddings</text>
-  <text x="440" y="350" font-family="'Courier New', monospace" font-size="10" fill="#777">Deduplicated by MD5 hash</text>
-
-  <!-- Entity Index (side card) -->
-  <rect x="640" y="180" width="200" height="80" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="660" y="202" font-family="'Courier New', monospace" font-size="12" font-weight="bold" fill="#fbbf24">Entity Index</text>
-  <text x="660" y="222" font-family="'Courier New', monospace" font-size="10" fill="#999">(ns_entity_index)</text>
-  <text x="660" y="242" font-family="'Courier New', monospace" font-size="10" fill="#777">Guaranteed entity recall</text>
-
-  <rect x="640" y="288" width="200" height="80" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="660" y="310" font-family="'Courier New', monospace" font-size="12" font-weight="bold" fill="#fbbf24">Group Cache</text>
-  <text x="660" y="330" font-family="'Courier New', monospace" font-size="10" fill="#999">In-memory centroid lookup</text>
-  <text x="660" y="350" font-family="'Courier New', monospace" font-size="10" fill="#777">Fast group matching</text>
-
-  <!-- Entity ↔ Groups connection -->
-  <line x1="620" y1="220" x2="640" y2="220" stroke="#888" stroke-width="1.5" stroke-dasharray="4,3"/>
-  <line x1="620" y1="328" x2="640" y2="328" stroke="#888" stroke-width="1.5" stroke-dasharray="4,3"/>
-
-  <!-- Arrow from Memory to Ollama -->
-  <line x1="840" y1="320" x2="890" y2="320" stroke="#888" stroke-width="2" marker-end="url(#arrow)"/>
-
-  <!-- Sleep mode -->
-  <rect x="420" y="390" width="420" height="44" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="440" y="412" font-family="'Courier New', monospace" font-size="11" font-weight="bold" fill="#60a5fa">Sleep Mode</text>
-  <text x="440" y="426" font-family="'Courier New', monospace" font-size="10" fill="#777">Vectorized group consolidation · LLM conflict analysis · group merging</text>
-
-  <!-- ===== COLUMN 3: OLLAMA ===== -->
-  <rect x="890" y="104" width="270" height="60" rx="8" fill="#1a1d2e" filter="url(#shadow)"/>
-  <text x="910" y="128" font-family="'Courier New', monospace" font-size="13" font-weight="bold" fill="#f472b6">OLLAMA BACKEND</text>
-  <text x="910" y="150" font-family="'Courier New', monospace" font-size="11" fill="#666">Local LLM inference · embeddings</text>
-
-  <!-- LLM box -->
-  <rect x="890" y="180" width="270" height="70" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="910" y="204" font-family="'Courier New', monospace" font-size="12" font-weight="bold" fill="#f472b6">LLM (DeepSeek-R1 1.5B)</text>
-  <text x="910" y="224" font-family="'Courier New', monospace" font-size="10" fill="#999">Streaming /api/chat responses</text>
-  <text x="910" y="242" font-family="'Courier New', monospace" font-size="10" fill="#777">Agentic function calling</text>
-
-  <!-- Embeddings box -->
-  <rect x="890" y="268" width="270" height="70" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="910" y="292" font-family="'Courier New', monospace" font-size="12" font-weight="bold" fill="#f472b6">Embeddings (nomic-embed-text)</text>
-  <text x="910" y="312" font-family="'Courier New', monospace" font-size="10" fill="#999">768-dim vectors via /api/embeddings</text>
-  <text x="910" y="330" font-family="'Courier New', monospace" font-size="10" fill="#777">Fallback: Sentence-BERT or MockEncoder</text>
-
-  <!-- Arrow from Ollama back to Memory (bidirectional) -->
-  <line x1="890" y1="300" x2="856" y2="300" stroke="#7c5cfc" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrowAccent)"/>
-
-  <!-- ===== TOOL FRAMEWORK (bottom) ===== -->
-  <rect x="40" y="464" width="1120" height="52" rx="8" fill="#1a1d2e" filter="url(#shadow)"/>
-  <text x="60" y="490" font-family="'Courier New', monospace" font-size="13" font-weight="bold" fill="#a78bfa">TOOL FRAMEWORK (auto-discovered via BaseTool subclassing)</text>
-  <text x="60" y="506" font-family="'Courier New', monospace" font-size="11" fill="#666">Modular extensions · command-based dispatch · access to memory grid</text>
-
-  <!-- Tool cards -->
-  <rect x="40" y="530" width="210" height="68" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="60" y="554" font-family="'Courier New', monospace" font-size="12" font-weight="bold" fill="#a78bfa">Storyline Agent</text>
-  <text x="60" y="572" font-family="'Courier New', monospace" font-size="10" fill="#999">/story &lt;topic&gt;</text>
-  <text x="60" y="588" font-family="'Courier New', monospace" font-size="10" fill="#777">3-phase: world config → sections → consistency</text>
-
-  <rect x="270" y="530" width="210" height="68" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="290" y="554" font-family="'Courier New', monospace" font-size="12" font-weight="bold" fill="#a78bfa">Infinite Loop</text>
-  <text x="290" y="572" font-family="'Courier New', monospace" font-size="10" fill="#999">/infinite on/off</text>
-  <text x="290" y="588" font-family="'Courier New', monospace" font-size="10" fill="#777">Continuous gen · rolling context · steering</text>
-
-  <rect x="500" y="530" width="210" height="68" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="520" y="554" font-family="'Courier New', monospace" font-size="12" font-weight="bold" fill="#a78bfa">GitHub Ingest</text>
-  <text x="520" y="572" font-family="'Courier New', monospace" font-size="10" fill="#999">/ingest &lt;url&gt;</text>
-  <text x="520" y="588" font-family="'Courier New', monospace" font-size="10" fill="#777">Clone repos → memory · 60+ extensions</text>
-
-  <rect x="730" y="530" width="210" height="68" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="750" y="554" font-family="'Courier New', monospace" font-size="12" font-weight="bold" fill="#a78bfa">Agent Behavior</text>
-  <text x="750" y="572" font-family="'Courier New', monospace" font-size="10" fill="#999">/behavior &lt;cmd&gt;</text>
-  <text x="750" y="588" font-family="'Courier New', monospace" font-size="10" fill="#777">Persona presets · custom system prompts</text>
-
-  <rect x="960" y="530" width="200" height="68" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="980" y="554" font-family="'Courier New', monospace" font-size="12" font-weight="bold" fill="#a78bfa">Example Tool</text>
-  <text x="980" y="572" font-family="'Courier New', monospace" font-size="10" fill="#999">/example &lt;cmd&gt;</text>
-  <text x="980" y="588" font-family="'Courier New', monospace" font-size="10" fill="#777">Few-shot templates · style guidance</text>
-
-  <!-- Performance Tracker (bottom bar) -->
-  <rect x="40" y="624" width="540" height="44" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="60" y="646" font-family="'Courier New', monospace" font-size="11" font-weight="bold" fill="#60a5fa">Performance Tracker</text>
-  <text x="60" y="660" font-family="'Courier New', monospace" font-size="10" fill="#777">Rolling latency metrics · ingest throughput · ASCII visualization</text>
-
-  <!-- Benchmarks -->
-  <rect x="620" y="624" width="540" height="44" rx="6" fill="#1e2238" stroke="#2a2e48" stroke-width="1"/>
-  <text x="640" y="646" font-family="'Courier New', monospace" font-size="11" font-weight="bold" fill="#60a5fa">Benchmark Suite</text>
-  <text x="640" y="660" font-family="'Courier New', monospace" font-size="10" fill="#777">Baseline RAG vs Hierarchical vs GraphRAG · 1M-token scale · recall accuracy</text>
-
-  <!-- Bottom tagline -->
-  <text x="440" y="716" font-family="'Courier New', monospace" font-size="12" fill="#555" text-anchor="middle">Python · ChromaDB · Ollama · NumPy · sentence-transformers</text>
-
-  <!-- Architecture flow arrows (vertical) -->
-  <line x1="200" y1="320" x2="200" y2="390" stroke="#888" stroke-width="1.5" stroke-dasharray="4,3"/>
-  <line x1="630" y1="434" x2="630" y2="464" stroke="#888" stroke-width="1.5" stroke-dasharray="4,3"/>
-
-  <!-- Bidirectional arrow between CLI and Memory -->
-  <line x1="360" y1="134" x2="420" y2="134" stroke="#7c5cfc" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrowAccent)"/>
-  <polygon points="355,134 365,130 365,138" fill="#7c5cfc"/>
-
-  <!-- Arrow: Tools ↔ Memory -->
-  <line x1="200" y1="598" x2="200" y2="624" stroke="#888" stroke-width="1.5" stroke-dasharray="4,3"/>
-
-  <!-- Entity index label -->
-  <text x="740" y="172" font-family="'Courier New', monospace" font-size="9" fill="#fbbf24" text-anchor="middle">ENTITY-ENHANCED RECALL</text>
+  <text x="400" y="870" font-family="monospace" font-size="14" fill="#777777" text-anchor="middle">Python · ChromaDB · Ollama · NumPy · sentence-transformers</text>
 
 </svg>

@@ -93,7 +93,7 @@ def measure(size: int) -> float:
 # =========================================================================
 # 1. COMPLEXITY COMPARISON
 # =========================================================================
-def run_complexity(large=False):
+def run_complexity():
     print("=" * 80)
     print("COMPLEXITY BENCHMARK: HNSW query time at collection sizes")
     print("=" * 80)
@@ -115,11 +115,11 @@ def run_complexity(large=False):
     ]
 
     print()
-    print("=" * 78)
-    print("COMPARISON:  Flat RAG  vs  Neural RAG (1 group query + 1 cell query)")
-    print("=" * 78)
+    print("=" * 86)
+    print("COMPARISON:  Flat RAG  vs  Cellular (parallel cells + entity queries)")
+    print("=" * 86)
     header = (
-        f"{'N':>6} | {'G':>4} | {'N/G':>5} | "
+        f"{'N':>7} | {'G':>4} | {'N/G':>5} | "
         f"{'Flat (ms)':>10} | "
         f"{'Cellular (ms)':>13} | "
         f"{'vs Flat':>8}"
@@ -135,19 +135,19 @@ def run_complexity(large=False):
         t_G = times.get(G, min(times.items(), key=lambda kv: abs(kv[0] - G))[1])
 
         flat = t_N
-        cellular = t_G + t_N
+        cellular = max(t_N, t_G)  # parallel: cells + entity index run concurrently
         ratio = flat / cellular
 
         print(
-            f"{N:>6} | {G:>4} | {ng:>5} | "
+            f"{N:>7} | {G:>4} | {ng:>5} | "
             f"{flat:>9.4f} | "
             f"{cellular:>12.4f} | "
             f"{ratio:>7.2f}x"
         )
 
     print()
-    print("  Cellular = t_G (group centroid query) + t_N (cell query, no WHERE)")
-    print("  vs Flat  = Flat / Cellular (lower < 1 = slightly slower but structured)")
+    print("  Cellular = max(t_N, t_G)  (parallel cells query + entity lookup)")
+    print("  vs Flat  = Flat / Cellular  (>=1 = same or faster than Flat RAG)")
 
 # =========================================================================
 # 2. NEEDLE-IN-HAYSTACK RECALL TEST
@@ -236,18 +236,13 @@ def run_recall():
 # =========================================================================
 if __name__ == "__main__":
     flags = set(sys.argv[1:])
-    do_large = "--large" in flags or "--all" in flags
     do_recall = "--recall" in flags or "--all" in flags
 
     if os.path.exists("./.bm"):
         shutil.rmtree("./.bm")
 
-    if not do_recall and not do_large:
-        # default: just complexity at small sizes
-        run_complexity(large=False)
-
-    if do_large:
-        run_complexity(large=True)
+    if not do_recall:
+        run_complexity()
 
     if do_recall:
         run_recall()

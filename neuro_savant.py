@@ -19,6 +19,7 @@ import numpy as np
 import threading
 from typing import List, Dict, Set, Tuple, Optional, Any
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import chromadb
 import argparse
 import sys
@@ -321,19 +322,25 @@ class NeuroSavant:
                 # This should never be called since we always pass embeddings directly
                 return [[0.0] * self.dim for _ in input]
         
-        noop_ef = NoOpEmbeddingFunction(encoder_dim)
+        self._noop_ef = NoOpEmbeddingFunction(encoder_dim)
         
         # Collections (with no-op embedding function to silence warnings)
-        self.cells = self.client.get_or_create_collection("ns_cells", embedding_function=noop_ef)
-        self.groups = self.client.get_or_create_collection("ns_groups", embedding_function=noop_ef)
-        self.entity_index = self.client.get_or_create_collection("ns_entity_index", embedding_function=noop_ef)
+        self.cells = self.client.get_or_create_collection("ns_cells", embedding_function=self._noop_ef)
+        self.groups = self.client.get_or_create_collection("ns_groups", embedding_function=self._noop_ef)
+        self.entity_index = self.client.get_or_create_collection("ns_entity_index", embedding_function=self._noop_ef)
         
         # In-memory cell registry (cell_id -> group_id) for O(1) dedup.
-        # Avoids querying ChromaDB just to check if a cell already exists.
         self._cell_registry: Dict[str, str] = {}
         self._cell_registry_path = os.path.join(config.db_path, "cell_registry.json")
         self._cell_count = 0
         self._load_cell_registry()
+
+        # Per-group cell collections cache (fast HNSW on N/G subsets)
+        # Written at ingest alongside self.cells; queried in parallel at search.
+        # ChromaDB 1.5.5 has a persist bug for dynamically created collections,
+        # so these are best-effort: if a collection fails to load at query time,
+        # we fall back to WHERE filter on self.cells.
+        self._cell_collections: Dict[str, Any] = {}
         
         # In-memory cache for group updates (thread-safe)
         self.group_cache = {}
@@ -439,6 +446,20 @@ class NeuroSavant:
 
         return set(existing.get('ids', []) or [])
 
+    def _cell_collection_name(self, group_id: str) -> str:
+        return f"ns_grp_{group_id.replace('-','_').replace(':','_')}"
+
+    def _get_cell_collection(self, group_id: str):
+        if group_id in self._cell_collections:
+            return self._cell_collections[group_id]
+        name = self._cell_collection_name(group_id)
+        try:
+            col = self.client.get_or_create_collection(name, embedding_function=self._noop_ef)
+            self._cell_collections[group_id] = col
+            return col
+        except Exception:
+            return None
+
     def _load_groups(self):
         try:
             existing = self._db_retry(lambda: self.groups.get(include=['embeddings', 'metadatas']))
@@ -485,6 +506,17 @@ class NeuroSavant:
             embeddings=[vector.tolist()],
             metadatas=[{"group_id": group_id, "creation_timestamp": time.time()}]
         )
+        grp_col = self._get_cell_collection(group_id)
+        if grp_col:
+            try:
+                grp_col.upsert(
+                    ids=[cell_id],
+                    documents=[text],
+                    embeddings=[vector.tolist()],
+                    metadatas=[{"group_id": group_id, "creation_timestamp": time.time()}]
+                )
+            except Exception:
+                pass
         self._cell_registry[cell_id] = group_id
         self._save_cell_registry()
 
@@ -601,13 +633,24 @@ class NeuroSavant:
                 entity_docs.append(entity)
                 entity_metas.append({"group_id": group_id, "entity": entity})
                 
-        # 3. Bulk Write to single cells collection
+        # 3. Bulk Write to single cells collection + per-group collections
         all_ids, all_docs, all_embs, all_metas = [], [], [], []
         for gid, batch in group_batches.items():
             all_ids.extend(batch["ids"])
             all_docs.extend(batch["documents"])
             all_embs.extend(batch["embeddings"])
             all_metas.extend([{"group_id": gid, "creation_timestamp": time.time()} for _ in batch["ids"]])
+            grp_col = self._get_cell_collection(gid)
+            if grp_col:
+                try:
+                    grp_col.upsert(
+                        ids=batch["ids"],
+                        documents=batch["documents"],
+                        embeddings=batch["embeddings"],
+                        metadatas=[{"group_id": gid, "creation_timestamp": time.time()} for _ in batch["ids"]],
+                    )
+                except Exception:
+                    pass
         for i in range(0, len(all_ids), 500):
             end = min(i + 500, len(all_ids))
             self.cells.upsert(
@@ -683,63 +726,22 @@ class NeuroSavant:
         entities = self.extractor.extract(query_text)
         print(f"DEBUG: Query='{query_text}', Entities={entities}")
         
-        # 2. Layer 0: Find relevant groups (Centroid Search)
+        # 2. Embed query + parallel search (cells + entity index)
         embed_start = time.perf_counter()
         query_vec = self.encoder.encode([query_text])[0]
         embed_time = (time.perf_counter() - embed_start) * 1000
         print(f"DEBUG: Embedding time: {embed_time:.1f}ms")
-        
-        # Search groups (with safety check for n_results)
-        target_group_ids = set()
-        group_count = self.groups.count()
-        if group_count > 0:
-            n_groups = min(self.config.group_top_k, group_count)
-            groups = self.groups.query(
-                query_embeddings=[query_vec.tolist()],
-                n_results=n_groups
-            )
-            if groups['ids'] and groups['ids'][0]:
-                target_group_ids.update(groups['ids'][0])
-                print(f"DEBUG: Found Groups via centroid: {target_group_ids}")
-        else:
-            print("DEBUG: No groups in database.")
-            
-        # Stage 1.5: Entity Index Lookup (Guaranteed Recall)
-        if entities:
-            entity_count = self.entity_index.count()
-            if entity_count > 0:
-                n_entities = min(self.config.group_top_k, entity_count)
-                for entity in entities:
-                    e_vec = self.encoder.encode([entity])[0].tolist()
-                    e_results = self.entity_index.query(
-                        query_embeddings=[e_vec],
-                        n_results=n_entities
-                    )
-                    print(f"DEBUG: Entity '{entity}' lookup results: {e_results['ids']}")
-                    if e_results['ids'] and e_results['ids'][0]:
-                        # Add all group_ids associated with the top-k entity results.
-                        target_group_ids.update([m['group_id'] for m in e_results['metadatas'][0]])
-                        print(f"DEBUG: Added Groups via entity '{entity}': {[m['group_id'] for m in e_results['metadatas'][0]]}")
-            
-        target_group_ids = list(target_group_ids)
-            
-        if not target_group_ids:
-            return "No memory found."
-            
-        # Stage 2: Search Cells within these Groups
-        # Strategy: query the single cells collection with a large n_results
-        # (no WHERE filter), then filter by group_id in Python.
-        # This avoids the 2-5x overhead of ChromaDB's metadata-filtered HNSW.
-        
+
         accumulated_docs = []
         accumulated_dists = []
-        
-        if target_group_ids and self.cells.count() > 0:
-            target_set = set(target_group_ids)
-            # Fetch enough candidates so each target group has a shot at top-k
-            large_n = min(self.config.cell_top_k * max(len(target_group_ids) * 3, 10),
-                          self.cells.count())
+        accumulated_metas = []
+        entity_groups = set()
+
+        def search_cells():
+            if self.cells.count() == 0:
+                return
             try:
+                large_n = min(self.config.cell_top_k * 3, self.cells.count())
                 res = self.cells.query(
                     query_embeddings=[query_vec.tolist()],
                     n_results=large_n,
@@ -747,32 +749,62 @@ class NeuroSavant:
                 if res['documents'] and res['documents'][0]:
                     for j, doc in enumerate(res['documents'][0]):
                         meta = res['metadatas'][0][j] if res['metadatas'] else {}
-                        gid = meta.get('group_id', None)
-                        if gid in target_set:
-                            accumulated_docs.append(doc)
-                            if 'distances' in res and res['distances'] and res['distances'][0]:
-                                accumulated_dists.append(res['distances'][0][j])
-                            else:
-                                accumulated_dists.append(0.5)
+                        accumulated_docs.append(doc)
+                        accumulated_metas.append(meta)
+                        dist = res['distances'][0][j] if res.get('distances') and res['distances'][0] else 0.5
+                        accumulated_dists.append(dist)
             except Exception as e:
                 print(f"DEBUG: Error in cell query: {e}")
+
+        def search_entities():
+            if not entities:
+                return
+            ec = self.entity_index.count()
+            if ec == 0:
+                return
+            n_ent = min(self.config.group_top_k, ec)
+            for entity in entities:
+                try:
+                    e_vec = self.encoder.encode([entity])[0].tolist()
+                    e_res = self.entity_index.query(
+                        query_embeddings=[e_vec],
+                        n_results=n_ent,
+                    )
+                    if e_res['ids'] and e_res['ids'][0]:
+                        for m in e_res['metadatas'][0]:
+                            entity_groups.add(m['group_id'])
+                except Exception:
+                    pass
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_cells = pool.submit(search_cells)
+            f_ent = pool.submit(search_entities)
+            f_cells.result()
+            f_ent.result()
+
+        if not accumulated_docs:
+            return "No memory found."
 
         # Construct candidate list from accumulated results
         candidates = []
         for i, doc in enumerate(accumulated_docs):
             dist = accumulated_dists[i] if i < len(accumulated_dists) else 1.0
             score = 1.0 / (1.0 + dist)
-            candidates.append({'doc': doc, 'score': score})
+            gid = accumulated_metas[i].get('group_id', None) if i < len(accumulated_metas) else None
+            candidates.append({'doc': doc, 'score': score, 'group_id': gid})
         
         # Stage 3: Reasoning & Re-ranking (Entity Boosting + Filename Boosting)
         query_lower = query_text.lower()
         for cand in candidates:
             doc = cand['doc']
             doc_lower = doc.lower()
-            
+
             for entity in entities:
                 if entity.lower() in doc_lower:
                     cand['score'] += self.config.entity_boost
+
+            if entity_groups and entity_groups & {cand['group_id']}:
+                cand['score'] += self.config.entity_boost * 0.5
 
             query_words = query_text.split()
             for word in query_words:
@@ -847,6 +879,25 @@ class NeuroSavant:
                         self._db_retry(lambda: self.cells.update(ids=source_cells['ids'], metadatas=new_metas))
                         for cid in source_cells['ids']:
                             self._cell_registry[cid] = target_id
+                        # Write merged cells to target per-group collection
+                        target_col = self._get_cell_collection(target_id)
+                        if target_col:
+                            try:
+                                target_col.upsert(
+                                    ids=source_cells['ids'],
+                                    documents=source_cells['documents'],
+                                    embeddings=source_cells['embeddings'],
+                                    metadatas=[{"group_id": target_id} for _ in source_cells['ids']],
+                                )
+                            except Exception:
+                                pass
+                    # Drop stale per-group collection for the source group
+                    source_name = self._cell_collection_name(source_id)
+                    try:
+                        self.client.delete_collection(source_name)
+                    except Exception:
+                        pass
+                    self._cell_collections.pop(source_id, None)
 
                     source_entities = self._db_retry(lambda: self.entity_index.get(where={"group_id": source_id}))
                     if source_entities['ids']:
@@ -1200,6 +1251,15 @@ Statements:
                             total_deleted += len(batch)
                 except Exception as e:
                     print(f"  WARN: Error clearing collection: {e}")
+            
+            # Drop per-group collections
+            for gid in list(self._cell_collections.keys()):
+                name = self._cell_collection_name(gid)
+                try:
+                    self.client.delete_collection(name)
+                except Exception:
+                    pass
+            self._cell_collections = {}
             
             self.group_cache = {}
             self._cell_registry = {}
