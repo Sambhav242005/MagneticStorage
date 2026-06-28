@@ -26,9 +26,11 @@ When you search, the system first identifies the relevant **Concept (Group)** an
 Efficiently scaling to millions of memories (`N`) by clustering them into `G` groups.
 
 ### 1. Retention (Ingest) & Search
-- **Search**: **`O(log G + k)`**
+- **Search**: **`O(log G + k · log(N/G))`**
     - Step 1 (Find Concept): `O(log G)` using ChromaDB's HNSW index on Group Centroids.
-    - Step 2 (Retrieve Details): `O(k)` to fetch top-k cells from the target Group (where `k` is small).
+    - Step 2 (Retrieve Details): `O(k · log(N/G))` — each of `k` groups has its own dedicated
+      HNSW index of size **N/G** (per-group collection), so cell retrieval is `O(log(N/G))`.
+      *No metadata filter overhead* — groups are isolated indices.
     - *vs RAG's `O(log N)`*: Since `G << N`, this is significantly faster and more semantic.
     
 - **Ingest (Formation)**: **`O(log G)`**
@@ -42,7 +44,8 @@ Efficiently scaling to millions of memories (`N`) by clustering them into `G` gr
 ## Why ChromaDB?
 We use **ChromaDB** not just as a vector store, but as a **Persistent Substrate** for our graph.
 - **HNSW Indices**: Provides the `O(log N)` underlying search speed.
-- **Metadata Filtering**: Critical for "Cellular" retrieval (`where group_id == X`).
+- **Per-Group Collections**: Each group gets its own ChromaDB collection (isolated HNSW index),
+  avoiding expensive metadata filtering on a single giant collection.
 - **Local & Fast**: Runs entirely on-device (no API latency), essential for an Agentic "Brain" that thinks constantly.
 
 ## Project Structure
