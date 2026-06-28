@@ -99,9 +99,7 @@ def run_complexity(large=False):
     print("=" * 80)
     print()
 
-    small_sizes = [10, 22, 44, 50, 100, 500, 2000, 10000]
-    large_sizes = [50000, 100000]
-    all_sizes = small_sizes + (large_sizes if large else [])
+    all_sizes = [50, 100, 150, 200, 500, 1000, 5000, 10000, 25000, 50000, 75000, 100000]
 
     times = {}
     for s in all_sizes:
@@ -110,10 +108,10 @@ def run_complexity(large=False):
         print(f"  N={s:>6}  {t:.4f}ms")
 
     configs = [
-        (100,   10),
-        (500,   22),
-        (2000,  45),
-        (10000, 100),
+        (25000,  50),
+        (50000,  100),
+        (75000,  150),
+        (100000, 200),
     ]
 
     print()

@@ -60,12 +60,12 @@ the ChromaDB bug.
 
 | N     | G   | N/G  | Flat RAG | Neural RAG | vs Flat |
 |-------|-----|------|----------|------------|---------|
-| 100   | 10  | 10   | 0.92ms   | 2.05ms     | 0.45x   |
-| 500   | 22  | 22   | 1.00ms   | 2.00ms     | 0.50x   |
-| 2000  | 45  | 44   | 1.36ms   | 2.33ms     | 0.59x   |
-| 10000 | 100 | 100  | 1.83ms   | 2.75ms     | 0.67x   |
+| 25000 | 50  | 500  | 1.97ms   | 2.82ms     | 0.70x   |
+| 50000 | 100 | 500  | 2.05ms   | 2.91ms     | 0.71x   |
+| 75000 | 150 | 500  | 2.87ms   | 3.68ms     | 0.78x   |
+| 100000| 200 | 500  | 2.44ms   | 3.38ms     | 0.72x   |
 
-*Cellular* = 1 group centroid query + 1 cell query (no WHERE filter). *vs Flat* = Flat / Cellular. Cellular is slightly slower at small N but provides *structured, conceptual retrieval* with group context — at scale the gap narrows as the group centroid query becomes negligible.
+*Cellular* = 1 group centroid query (t_G) + 1 cell query (t_N, no WHERE). *vs Flat* = Flat / Cellular. Cellular adds ~0.85ms overhead for the group lookup but provides *structured, conceptual retrieval* with group context. All queries are sub-4ms at 100k docs.
 
 ### Recall Benchmark
 `python benchmarks/benchmark_complexity.py --recall` — Needle-in-Haystack test:
