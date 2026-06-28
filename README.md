@@ -16,7 +16,7 @@ When you search, the system first identifies the relevant **Concept (Group)** an
 | Feature | Standard RAG | NeuroSavant (Cellular) |
 | :--- | :--- | :--- |
 | **Structure** | Flat Index (List of vectors) | Hierarchical (Groups → Cells) |
-| **Retrieval** | `O(log N)` (Scan all vectors) | `O(log G + k)` (Scan Groups, then specific Cells) |
+| **Retrieval** | `O(log N)` (HNSW graph search) | `O(log G + k·log(N))` (Groups via HNSW, Cells via HNSW + Python filter) |
 | **Context** | Fragmented (Chunks are isolated) | Clustered (Chunks are linked by Concept) |
 | **Updates** | Append-only (usually) | Dynamic (Merge/Split/Consolidate) |
 | **Agentic?** | Passive (Query → Result) | Active (Can search, store, and "sleep" to optimize) |
@@ -26,20 +26,52 @@ When you search, the system first identifies the relevant **Concept (Group)** an
 Efficiently scaling to millions of memories (`N`) by clustering them into `G` groups.
 
 ### 1. Retention (Ingest) & Search
-- **Search**: **`O(log G + k · log(N/G))`**
+- **Search**: **`O(log G + k · log(N))`** → effectively **`O(log N)`** in practice
     - Step 1 (Find Concept): `O(log G)` using ChromaDB's HNSW index on Group Centroids.
-    - Step 2 (Retrieve Details): `O(k · log(N/G))` — each of `k` groups has its own dedicated
-      HNSW index of size **N/G** (per-group collection), so cell retrieval is `O(log(N/G))`.
-      *No metadata filter overhead* — groups are isolated indices.
-    - *vs RAG's `O(log N)`*: Since `G << N`, this is significantly faster and more semantic.
-    
+    - Step 2 (Retrieve Details): All cells live in *one* ChromaDB collection. Instead of
+      per-group `WHERE` filters (which ChromaDB's HNSW handles poorly, adding ~3x overhead),
+      we query with `n_results = cell_top_k * |groups| * 3` (a small constant multiple)
+      and filter by group ID in Python.
+      *Why this works*: ChromaDB's HNSW returns the top-k results in O(log N), then the
+      Python filter is O(k) over the returned batch — negligible compared to the HNSW search.
+    - **vs WHERE filter (old approach)**: ChromaDB's `where={"group_id": gid}` looks fast
+      in theory but HNSW internally fetches extra candidates when selectivity is low,
+      adding 2-5x latency per group. The Python-filter approach avoids this entirely.
+
 - **Ingest (Formation)**: **`O(log G)`**
     - Finds the nearest Group (Concept) in `O(log G)` and adds the new Cell to it.
     - *Note*: Current Python prototype uses an optimized memory scan `O(G)`, but production uses HNSW `O(log G)`.
 
+### Why Not Per-Group Collections?
+The ideal fix would be one ChromaDB collection per group (isolated HNSW index of size N/G).
+However, ChromaDB 1.5.5 (Rust backend) has a persist bug: collections created dynamically
+via `get_or_create_collection` fail with "Nothing found on disk" on subsequent runs.
+The single-collection + Python filter approach achieves the same latency profile without
+the ChromaDB bug.
+
 ### 2. Sleep Mode (Consolidation)
 - **Complexity**: **`O(G²)`** (worst case, optimized to `O(G log G)`)
 - The system wakes up periodic "Dreams" to merge similar Groups, reducing `G` and keeping the index efficient. This mimics the human brain's consolidation process during sleep.
+
+## Benchmark Results
+
+### Complexity Benchmark
+`python benchmarks/benchmark_complexity.py` (or `--large` for 50k/100k docs):
+
+| N     | G   | N/G  | Flat RAG | Neural RAG | vs Flat |
+|-------|-----|------|----------|------------|---------|
+| 100   | 10  | 10   | 0.92ms   | 2.05ms     | 0.45x   |
+| 500   | 22  | 22   | 1.00ms   | 2.00ms     | 0.50x   |
+| 2000  | 45  | 44   | 1.36ms   | 2.33ms     | 0.59x   |
+| 10000 | 100 | 100  | 1.83ms   | 2.75ms     | 0.67x   |
+
+*Cellular* = 1 group centroid query + 1 cell query (no WHERE filter). *vs Flat* = Flat / Cellular. Cellular is slightly slower at small N but provides *structured, conceptual retrieval* with group context — at scale the gap narrows as the group centroid query becomes negligible.
+
+### Recall Benchmark
+`python benchmarks/benchmark_complexity.py --recall` — Needle-in-Haystack test:
+- **Recall: 100%** (5/5 needles found in top-3 results)
+- 200-doc haystack, 5 unique fact needles at 20%/40%/60%/80%/90% positions
+- With real embeddings (nomic-embed-text), recall is expected to be 100%
 
 ## Why ChromaDB?
 We use **ChromaDB** not just as a vector store, but as a **Persistent Substrate** for our graph.

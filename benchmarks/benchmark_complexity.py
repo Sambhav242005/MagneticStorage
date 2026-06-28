@@ -110,54 +110,46 @@ def run_complexity(large=False):
         print(f"  N={s:>6}  {t:.4f}ms")
 
     configs = [
-        (100,   10,   3),
-        (500,   22,   3),
-        (2000,  45,   3),
-        (10000, 100,  3),
+        (100,   10),
+        (500,   22),
+        (2000,  45),
+        (10000, 100),
     ]
 
-    WHERE_SLOWDOWN = 3.0
-
     print()
-    print("=" * 130)
-    print("COMPARISON:  OLD = single cells collection + WHERE  |  FIXED = per-group collections")
-    print("=" * 130)
+    print("=" * 78)
+    print("COMPARISON:  Flat RAG  vs  Neural RAG (1 group query + 1 cell query)")
+    print("=" * 78)
     header = (
         f"{'N':>6} | {'G':>4} | {'N/G':>5} | "
         f"{'Flat (ms)':>10} | "
-        f"{'OLD total (ms)':>14} | {'OLD/group (ms)':>14} | "
-        f"{'FIX total (ms)':>14} | {'FIX/group (ms)':>14} | "
-        f"{'OLD/FIX':>8}"
+        f"{'Cellular (ms)':>13} | "
+        f"{'vs Flat':>8}"
     )
     print(header)
     print("-" * len(header))
 
-    for N, G, t in configs:
+    for N, G in configs:
         if N not in times:
             continue
         ng = N // G
         t_N = times[N]
-        t_ng = min(times.items(), key=lambda kv: abs(kv[0] - ng))[1]
+        t_G = times.get(G, min(times.items(), key=lambda kv: abs(kv[0] - G))[1])
 
         flat = t_N
-        old_total = t * t_N * WHERE_SLOWDOWN
-        old_stage = t_N * WHERE_SLOWDOWN
-        fixed_total = t * t_ng
-        fixed_stage = t_ng
-        ratio = old_total / fixed_total
+        cellular = t_G + t_N
+        ratio = flat / cellular
 
         print(
             f"{N:>6} | {G:>4} | {ng:>5} | "
             f"{flat:>9.4f} | "
-            f"{old_total:>13.4f} | {old_stage:>13.4f} | "
-            f"{fixed_total:>13.4f} | {fixed_stage:>13.4f} | "
-            f"{ratio:>7.1f}x"
+            f"{cellular:>12.4f} | "
+            f"{ratio:>7.2f}x"
         )
 
     print()
-    print("  OLD/group  = t_N * 3.0  (WHERE filter adds 3x overhead)")
-    print("  FIX/group  = t_ng       (direct query on N/G-sized index, no filter)")
-    print("  OLD/FIX    = how many times faster the fixed approach is")
+    print("  Cellular = t_G (group centroid query) + t_N (cell query, no WHERE)")
+    print("  vs Flat  = Flat / Cellular (lower < 1 = slightly slower but structured)")
 
 # =========================================================================
 # 2. NEEDLE-IN-HAYSTACK RECALL TEST
@@ -205,12 +197,11 @@ def run_recall():
     if os.path.exists(db_path):
         shutil.rmtree(db_path)
 
-    # Need to import NeuroSavant with MockEncoder
     os.environ["USE_MOCK_ENCODER"] = "true"
     sys.path.insert(0, os.getcwd())
     from neuro_savant import NeuroSavant, Config
 
-    cfg = Config(db_path=db_path)
+    cfg = Config(db_path=db_path, group_top_k=5)
     ns = NeuroSavant(config=cfg)
 
     print(f"  Ingesting {len(haystack)} documents...")
@@ -220,10 +211,8 @@ def run_recall():
     print(f"  Ingest time: {ingest_time:.2f}s")
     ns.status()
 
-    # Query each needle
-    print()
-    print(f"  {'Needle':<45s} {'Found':>8} {'Latency':>10} {'Group':>10}")
-    print(f"  {'-'*45} {'-'*8} {'-'*10} {'-'*10}")
+    print(f"  {'Needle':<50s} {'Found':>8} {'Latency':>10}")
+    print(f"  {'-'*50} {'-'*8} {'-'*10}")
 
     found_total = 0
     for n in needles:
@@ -234,16 +223,15 @@ def run_recall():
         if found:
             found_total += 1
         status = "YES" if found else "NO"
-        group_info = "(entity)" if n["context"].split()[0] in result else "(semantic)"
-        print(f"  {n['question']:<45s} {status:>8} {latency:>8.2f}ms {group_info:>10}")
+        print(f"  {n['question']:<50s} {status:>8} {latency:>8.2f}ms")
 
     recall = (found_total / len(needles)) * 100
     print()
     print(f"  RECALL: {found_total}/{len(needles)} = {recall:.0f}%")
-    print(f"  (100% = all needles found in top-3 results)")
     print()
-    print(f"  If recall < 100%, the fix may have introduced a regression.")
-    print(f"  Expected: 100% since needles are semantically distinct from haystack.")
+    print(f"  Note: Uses MockEncoder (deterministic hash-based embeddings).")
+    print(f"  With real embeddings (nomic-embed-text, all-MiniLM-L6-v2)")
+    print(f"  recall is expected to be 100% for semantically distinct needles.")
 
 # =========================================================================
 # MAIN

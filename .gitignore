@@ -11,6 +11,7 @@ venv/
 
 # ChromaDB / Vector Stores
 neuro_savant_memory/
+.bm/
 neuro_savant_v2_db/
 benchmark_baseline_db/
 benchmark_graph_db/
