@@ -726,7 +726,7 @@ class NeuroSavant:
         entities = self.extractor.extract(query_text)
         print(f"DEBUG: Query='{query_text}', Entities={entities}")
         
-        # 2. Embed query + parallel search (cells + entity index)
+        # 2. Embed query + hierarchical search (centroids → per-group cells) + entity index
         embed_start = time.perf_counter()
         query_vec = self.encoder.encode([query_text])[0]
         embed_time = (time.perf_counter() - embed_start) * 1000
@@ -735,26 +735,59 @@ class NeuroSavant:
         accumulated_docs = []
         accumulated_dists = []
         accumulated_metas = []
-        entity_groups = set()
+        target_group_ids = []
+        entity_group_ids = set()
 
-        def search_cells():
-            if self.cells.count() == 0:
-                return
+        # Stage A: Find target groups via centroid search
+        group_count = self.groups.count()
+        if group_count > 0:
+            n_groups = min(self.config.group_top_k, group_count)
+            groups = self.groups.query(
+                query_embeddings=[query_vec.tolist()],
+                n_results=n_groups
+            )
+            if groups['ids'] and groups['ids'][0]:
+                target_group_ids = list(groups['ids'][0])
+                print(f"DEBUG: Target groups via centroid: {target_group_ids}")
+
+        if not target_group_ids:
+            return "No memory found."
+
+        target_set = set(target_group_ids)
+        query_vec_list = [query_vec.tolist()]
+
+        def query_group_cells(gid: str):
+            results = []
+            col = self._get_cell_collection(gid)
+            if col:
+                try:
+                    res = col.query(
+                        query_embeddings=query_vec_list,
+                        n_results=self.config.cell_top_k,
+                    )
+                    if res['documents'] and res['documents'][0]:
+                        for j, doc in enumerate(res['documents'][0]):
+                            meta = res['metadatas'][0][j] if res['metadatas'] else {}
+                            dist = res['distances'][0][j] if res.get('distances') and res['distances'][0] else 0.5
+                            results.append((doc, dist, meta))
+                        return results
+                except Exception:
+                    pass
+            # Fallback: WHERE on main cells collection
             try:
-                large_n = min(self.config.cell_top_k * 3, self.cells.count())
                 res = self.cells.query(
-                    query_embeddings=[query_vec.tolist()],
-                    n_results=large_n,
+                    query_embeddings=query_vec_list,
+                    n_results=self.config.cell_top_k,
+                    where={"group_id": gid},
                 )
                 if res['documents'] and res['documents'][0]:
                     for j, doc in enumerate(res['documents'][0]):
                         meta = res['metadatas'][0][j] if res['metadatas'] else {}
-                        accumulated_docs.append(doc)
-                        accumulated_metas.append(meta)
                         dist = res['distances'][0][j] if res.get('distances') and res['distances'][0] else 0.5
-                        accumulated_dists.append(dist)
-            except Exception as e:
-                print(f"DEBUG: Error in cell query: {e}")
+                        results.append((doc, dist, meta))
+            except Exception:
+                pass
+            return results
 
         def search_entities():
             if not entities:
@@ -772,15 +805,56 @@ class NeuroSavant:
                     )
                     if e_res['ids'] and e_res['ids'][0]:
                         for m in e_res['metadatas'][0]:
-                            entity_groups.add(m['group_id'])
+                            entity_group_ids.add(m['group_id'])
                 except Exception:
                     pass
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_cells = pool.submit(search_cells)
+        with ThreadPoolExecutor(max_workers=min(len(target_set) + 1, 8)) as pool:
+            futures = {pool.submit(query_group_cells, gid): gid for gid in target_set}
             f_ent = pool.submit(search_entities)
-            f_cells.result()
+            for fut in as_completed(futures):
+                try:
+                    for doc, dist, meta in fut.result():
+                        accumulated_docs.append(doc)
+                        accumulated_dists.append(dist)
+                        accumulated_metas.append(meta)
+                except Exception:
+                    pass
             f_ent.result()
+
+        # Stage C: Query per-group collections for entity-found groups not in centroid results
+        extra = entity_group_ids - target_set
+        if extra:
+            print(f"DEBUG: Extra groups via entity: {extra}")
+            with ThreadPoolExecutor(max_workers=min(len(extra) + 1, 4)) as pool:
+                futures = {pool.submit(query_group_cells, gid): gid for gid in extra}
+                for fut in as_completed(futures):
+                    try:
+                        for doc, dist, meta in fut.result():
+                            accumulated_docs.append(doc)
+                            accumulated_dists.append(dist)
+                            accumulated_metas.append(meta)
+                    except Exception:
+                        pass
+
+        # Stage D: Fallback — if per-group queries returned fewer docs than
+        # we'd expect from the full index, query all cells (identical to flat RAG).
+        if len(accumulated_docs) < self.config.cell_top_k:
+            try:
+                large_n = min(self.config.cell_top_k * 3, self.cells.count())
+                res = self.cells.query(
+                    query_embeddings=query_vec_list,
+                    n_results=large_n,
+                )
+                if res['documents'] and res['documents'][0]:
+                    for j, doc in enumerate(res['documents'][0]):
+                        meta = res['metadatas'][0][j] if res['metadatas'] else {}
+                        dist = res['distances'][0][j] if res.get('distances') and res['distances'][0] else 0.5
+                        accumulated_docs.append(doc)
+                        accumulated_dists.append(dist)
+                        accumulated_metas.append(meta)
+            except Exception:
+                pass
 
         if not accumulated_docs:
             return "No memory found."
@@ -803,7 +877,7 @@ class NeuroSavant:
                 if entity.lower() in doc_lower:
                     cand['score'] += self.config.entity_boost
 
-            if entity_groups and entity_groups & {cand['group_id']}:
+            if entity_group_ids and cand['group_id'] in entity_group_ids:
                 cand['score'] += self.config.entity_boost * 0.5
 
             query_words = query_text.split()

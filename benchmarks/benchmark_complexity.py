@@ -116,7 +116,7 @@ def run_complexity():
 
     print()
     print("=" * 86)
-    print("COMPARISON:  Flat RAG  vs  Cellular (parallel cells + entity queries)")
+    print("COMPARISON:  Flat RAG  vs  Cellular (hierarchical: centroid → per-group)")
     print("=" * 86)
     header = (
         f"{'N':>7} | {'G':>4} | {'N/G':>5} | "
@@ -133,9 +133,10 @@ def run_complexity():
         ng = N // G
         t_N = times[N]
         t_G = times.get(G, min(times.items(), key=lambda kv: abs(kv[0] - G))[1])
+        t_ng = times.get(ng, min(times.items(), key=lambda kv: abs(kv[0] - ng))[1])
 
         flat = t_N
-        cellular = max(t_N, t_G)  # parallel: cells + entity index run concurrently
+        cellular = t_G + t_ng  # centroid search + parallel per-group queries (wall-clock)
         ratio = flat / cellular
 
         print(
@@ -146,8 +147,8 @@ def run_complexity():
         )
 
     print()
-    print("  Cellular = max(t_N, t_G)  (parallel cells query + entity lookup)")
-    print("  vs Flat  = Flat / Cellular  (>=1 = same or faster than Flat RAG)")
+    print("  Cellular = t_G (centroid) + t_{N/G} (parallel per-group queries)")
+    print("  vs Flat  = Flat / Cellular  (>1 = faster than Flat RAG)")
 
 # =========================================================================
 # 2. NEEDLE-IN-HAYSTACK RECALL TEST

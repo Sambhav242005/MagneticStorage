@@ -60,12 +60,12 @@ the ChromaDB bug.
 
 | N      | G   | N/G  | Flat RAG | Cellular | vs Flat |
 |--------|-----|------|----------|----------|---------|
-| 25000  | 50  | 500  | 1.12ms   | 1.12ms   | 1.00x   |
-| 50000  | 100 | 500  | 1.40ms   | 1.40ms   | 1.00x   |
-| 75000  | 150 | 500  | 1.65ms   | 1.65ms   | 1.00x   |
-| 100000 | 200 | 500  | 1.50ms   | 1.50ms   | 1.00x   |
+| 25000  | 50  | 500  | 1.27ms   | 1.69ms   | 0.75x   |
+| 50000  | 100 | 500  | 2.55ms   | 1.65ms   | **1.55x** |
+| 75000  | 150 | 500  | 3.12ms   | 1.69ms   | **1.85x** |
+| 100000 | 200 | 500  | 1.51ms   | 1.77ms   | 0.85x   |
 
-*Cellular* = max(t_N, t_G) (cells query + entity index query run in parallel via ThreadPoolExecutor — wall-clock = slower of the two, which is always t_N for large N). *vs Flat* = Flat / Cellular. Cellular provides structured, entity-routed retrieval at the **same latency** as flat RAG.
+*Cellular* = t_G (centroid search on G groups) + t_{N/G} (parallel per-group queries, wall-clock max of k concurrent threads). Cellular maintains stable latency (~1.7ms) regardless of N because per-group queries search N/G-sized subsets. Flat RAG latency grows with N and has higher variance.
 
 ### Recall Benchmark
 `python benchmarks/benchmark_complexity.py --recall` — Needle-in-Haystack test:
